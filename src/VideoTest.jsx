@@ -661,7 +661,7 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
       : status === "error"
         ? "Voice agent unavailable"
         : isSpeaking
-          ? "Speaking through ElevenLabs"
+          ? "Speaking now"
           : "Ready to coach";
 
   return (
@@ -671,19 +671,23 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
         borderRadius: 8,
         overflow: "hidden",
         aspectRatio: "4 / 3",
-        background: "radial-gradient(circle at 30% 20%, #332E63 0%, #1A2035 42%, #101526 100%)",
+        background: "radial-gradient(circle at 30% 20%, #312B63 0%, #191E33 44%, #0F1426 100%)",
         border: "1px solid rgba(167, 146, 255, 0.35)",
       }}
     >
       <style>{`
         @keyframes mentorai-wave {
-          0% { transform: scale(0.92); opacity: 0.55; }
-          70% { transform: scale(1.28); opacity: 0; }
-          100% { transform: scale(1.32); opacity: 0; }
+          0% { transform: translate(-50%, -50%) scale(0.86); opacity: 0.65; }
+          70% { transform: translate(-50%, -50%) scale(1.28); opacity: 0.16; }
+          100% { transform: translate(-50%, -50%) scale(1.46); opacity: 0; }
         }
         @keyframes mentorai-breathe {
           0%, 100% { transform: scale(1); }
-          50% { transform: scale(1.03); }
+          50% { transform: scale(1.04); }
+        }
+        @keyframes mentorai-core-glow {
+          0%, 100% { box-shadow: 0 18px 42px rgba(108, 92, 231, 0.24), 0 0 0 0 rgba(167, 146, 255, 0.18); }
+          50% { box-shadow: 0 22px 48px rgba(108, 92, 231, 0.38), 0 0 0 10px rgba(167, 146, 255, 0.08); }
         }
       `}</style>
 
@@ -700,17 +704,21 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
           textAlign: "center",
         }}
       >
-        <div style={{ position: "relative", width: 108, height: 108, marginBottom: 14 }}>
-          {isSpeaking && [0, 1, 2].map((index) => (
+        <div style={{ position: "relative", width: 184, height: 184, marginBottom: 16 }}>
+          {isSpeaking && [0, 1, 2, 3].map((index) => (
             <span
               key={index}
               style={{
                 position: "absolute",
-                inset: 0,
+                top: "50%",
+                left: "50%",
+                width: 184,
+                height: 184,
                 borderRadius: "50%",
-                border: "1px solid rgba(167, 146, 255, 0.55)",
-                animation: "mentorai-wave 1.6s ease-out infinite",
-                animationDelay: `${index * 0.24}s`,
+                border: "2px solid rgba(167, 146, 255, 0.58)",
+                boxShadow: "0 0 26px rgba(108, 92, 231, 0.18)",
+                animation: "mentorai-wave 1.55s ease-out infinite",
+                animationDelay: `${index * 0.18}s`,
               }}
             />
           ))}
@@ -718,18 +726,30 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
           <div
             style={{
               position: "absolute",
-              inset: 10,
+              top: "50%",
+              left: "50%",
+              width: 142,
+              height: 142,
+              transform: "translate(-50%, -50%)",
               borderRadius: "50%",
-              background: "linear-gradient(145deg, #8C7BFF 0%, #6C5CE7 65%, #4C3EC0 100%)",
+              background: "linear-gradient(145deg, #A792FF 0%, #7D6AF4 38%, #6C5CE7 68%, #4F3DD1 100%)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: "0 18px 36px rgba(0, 0, 0, 0.25)",
-              animation: isSpeaking ? "mentorai-breathe 1s ease-in-out infinite" : "none",
+              boxShadow: "0 18px 42px rgba(108, 92, 231, 0.24)",
+              animation: isSpeaking ? "mentorai-breathe 0.95s ease-in-out infinite, mentorai-core-glow 1.1s ease-in-out infinite" : "none",
             }}
           >
-            <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: "0.08em", fontFamily: fontDisplay }}>
-              11
+            <div
+              style={{
+                fontSize: 48,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                fontFamily: fontDisplay,
+                color: "#FFFFFF",
+              }}
+            >
+              AI
             </div>
           </div>
         </div>
@@ -802,7 +822,7 @@ function LiveCallLayout({ studentName, aiSpeaking, aiStatus, aiTranscript }) {
           </div>
 
           <AITutorTile
-            agentName="ElevenLabs Voice Agent"
+            agentName="AI Tutor"
             isSpeaking={aiSpeaking}
             status={aiStatus}
             transcript={aiTranscript}
