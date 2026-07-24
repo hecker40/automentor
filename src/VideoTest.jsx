@@ -2163,7 +2163,7 @@ function MentorAIDemoInner() {
 
       {/* Main 3-column grid */}
       <div style={{ display: "grid", gridTemplateColumns: "320px 1fr 300px", gap: 16, padding: 16 }}>
-        {/* LEFT: Video */}
+        {/* LEFT: Video + chat */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Panel title="Student + AI tutor">
             <LiveCallLayout
@@ -2174,22 +2174,81 @@ function MentorAIDemoInner() {
             />
           </Panel>
 
-          <div
-            style={{
-              background: theme.purpleSoft,
-              border: `1px solid #DDD7F9`,
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontSize: 12,
-              color: "#4A3FA3",
-              display: "flex",
-              gap: 8,
-              alignItems: "flex-start",
-            }}
-          >
-            <Sparkles size={13} style={{ marginTop: 2, flexShrink: 0 }} />
-            <span>MentorAI now replies directly to the student, then speaks the coaching out loud through an ElevenLabs voice agent.</span>
-          </div>
+          <Panel title={null} noPad>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderBottom: `1px solid ${theme.border}` }}>
+              <MessageSquare size={14} color={theme.textMuted} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Session chat</span>
+            </div>
+
+            <div
+              style={{
+                padding: "12px 16px 10px",
+                fontSize: 11,
+                color: theme.textMuted,
+                lineHeight: 1.5,
+                borderBottom: `1px solid ${theme.border}`,
+                background: "#FCFBF8",
+              }}
+            >
+              Ask MentorAI here and hear the reply from the AI tutor voice.
+            </div>
+
+            <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8, height: 260, overflowY: "auto" }}>
+              {messages.map((m) => {
+                const isMine = m.from === "student";
+                return (
+                  <div key={m.id} style={{ display: "flex", justifyContent: isMine ? "flex-end" : "flex-start" }}>
+                    <div
+                      style={{
+                        maxWidth: "82%",
+                        fontSize: 13,
+                        padding: "8px 12px",
+                        borderRadius: 10,
+                        background: isMine ? theme.navy : "#F1EFE8",
+                        color: isMine ? "#fff" : theme.text,
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      {m.text}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderTop: `1px solid ${theme.border}` }}>
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                placeholder="Ask MentorAI..."
+                style={{
+                  flex: 1,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                  fontFamily: fontBody,
+                  outline: "none",
+                }}
+              />
+              <button
+                onClick={sendMessage}
+                style={{
+                  border: "none",
+                  background: theme.navy,
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "0 14px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <Send size={14} />
+              </button>
+            </div>
+          </Panel>
         </div>
 
         {/* CENTER: Workspace */}
@@ -3190,69 +3249,6 @@ function MentorAIDemoInner() {
                 )}
               </div>
             )}
-          </div>
-        </Panel>
-      </div>
-
-      {/* Bottom chat */}
-      <div style={{ padding: "0 16px 16px" }}>
-        <Panel title={null} noPad>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderBottom: `1px solid ${theme.border}` }}>
-            <MessageSquare size={14} color={theme.textMuted} />
-            <span style={{ fontSize: 13, fontWeight: 500 }}>Session chat</span>
-          </div>
-          <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8, maxHeight: 120, overflowY: "auto" }}>
-            {messages.map((m) => {
-              const isMine = m.from === "student";
-              return (
-                <div key={m.id} style={{ display: "flex", justifyContent: isMine ? "flex-end" : "flex-start" }}>
-                  <div
-                    style={{
-                      maxWidth: "70%",
-                      fontSize: 13,
-                      padding: "8px 12px",
-                      borderRadius: 10,
-                      background: isMine ? theme.navy : "#F1EFE8",
-                      color: isMine ? "#fff" : theme.text,
-                    }}
-                  >
-                    {m.text}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderTop: `1px solid ${theme.border}` }}>
-            <input
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-              placeholder="Ask MentorAI or message the room..."
-              style={{
-                flex: 1,
-                border: `1px solid ${theme.border}`,
-                borderRadius: 8,
-                padding: "8px 12px",
-                fontSize: 13,
-                fontFamily: fontBody,
-                outline: "none",
-              }}
-            />
-            <button
-              onClick={sendMessage}
-              style={{
-                border: "none",
-                background: theme.navy,
-                color: "#fff",
-                borderRadius: 8,
-                padding: "0 14px",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              <Send size={14} />
-            </button>
           </div>
         </Panel>
       </div>
