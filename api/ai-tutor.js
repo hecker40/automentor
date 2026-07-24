@@ -1,6 +1,14 @@
 const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
 const DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2";
 const DEFAULT_AUDIO_MIME = "audio/mpeg";
+const PLACEHOLDER_VOICE_IDS = new Set([
+  "test",
+  "voice-id",
+  "your-voice-id",
+  "your_voice_id",
+  "placeholder",
+  "demo",
+]);
 
 function sendJson(res, status, payload) {
   res.statusCode = status;
@@ -29,6 +37,11 @@ async function readJsonBody(req) {
 function cleanText(value, fallback = "") {
   const text = String(value || "").trim();
   return text || fallback;
+}
+
+function isPlaceholderVoiceId(value) {
+  const normalized = cleanText(value).toLowerCase();
+  return !normalized || PLACEHOLDER_VOICE_IDS.has(normalized);
 }
 
 function compactList(values = [], limit = 3) {
@@ -67,6 +80,128 @@ function buildFallbackTutorText({ studentName, subject, problem, studentMessage,
   }
 
   return `Alright ${safeStudent}, let’s work through ${focusPrompt}. I want you to say the next step out loud, and I’ll help you check it as you go.`;
+}
+
+async function listVoices(apiKey) {
+  const response = await fetch("https://api.elevenlabs.io/v1/voices", {
+    headers: {
+      "xi-api-key": apiKey,
+    },
+  });
+
+  if (!response.ok) {
+    let message = "Unable to load ElevenLabs voices";
+
+    try {
+      const errorData = await response.json();
+      message = errorData?.detail?.message || errorData?.detail || errorData?.message || message;
+    } catch {
+      // ignore parse failure
+    }
+
+    throw new Error(message);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data?.voices) ? data.voices : [];
+}
+
+function pickVoiceFromList(voices, preferredName = "") {
+  if (!voices.length) return null;
+
+  const normalizedPreferred = cleanText(preferredName).toLowerCase();
+
+  if (normalizedPreferred) {
+    const exactMatch = voices.find((voice) => cleanText(voice?.name).toLowerCase() === normalizedPreferred);
+    if (exactMatch) return exactMatch;
+
+    const partialMatch = voices.find((voice) => cleanText(voice?.name).toLowerCase().includes(normalizedPreferred));
+    if (partialMatch) return partialMatch;
+  }
+
+  return voices[0] || null;
+}
+
+async function resolveVoiceSelection(apiKey, requestedVoiceId) {
+  const preferredName = cleanText(process.env.ELEVENLABS_VOICE_NAME);
+  const cleanedVoiceId = cleanText(requestedVoiceId);
+
+  if (cleanedVoiceId && !isPlaceholderVoiceId(cleanedVoiceId)) {
+    return {
+      voiceId: cleanedVoiceId,
+      voiceName: "",
+      warning: "",
+      autoSelected: false,
+    };
+  }
+
+  const voices = await listVoices(apiKey);
+  const chosenVoice = pickVoiceFromList(voices, preferredName);
+
+  if (!chosenVoice?.voice_id) {
+    return {
+      voiceId: "",
+      voiceName: "",
+      warning: "No ElevenLabs voices were available for this account.",
+      autoSelected: true,
+    };
+  }
+
+  return {
+    voiceId: chosenVoice.voice_id,
+    voiceName: cleanText(chosenVoice.name),
+    warning:
+      cleanedVoiceId && isPlaceholderVoiceId(cleanedVoiceId)
+        ? `ELEVENLABS_VOICE_ID is set to a placeholder (${cleanedVoiceId}). Using ${cleanText(chosenVoice.name, "an available ElevenLabs voice")} instead.`
+        : preferredName
+          ? `Using ElevenLabs voice ${cleanText(chosenVoice.name, "from your account")} from ELEVENLABS_VOICE_NAME.`
+          : `Using ElevenLabs voice ${cleanText(chosenVoice.name, "from your account")} automatically.`,
+    autoSelected: true,
+  };
+}
+
+async function requestSpeechFromElevenLabs({ apiKey, voiceId, text }) {
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    method: "POST",
+    headers: {
+      "xi-api-key": apiKey,
+      Accept: DEFAULT_AUDIO_MIME,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      text,
+      model_id: process.env.ELEVENLABS_MODEL_ID || DEFAULT_ELEVENLABS_MODEL,
+      voice_settings: {
+        stability: 0.45,
+        similarity_boost: 0.8,
+        style: 0.2,
+        use_speaker_boost: true,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    let message = "ElevenLabs speech synthesis failed";
+    try {
+      const errorData = await response.json();
+      message = errorData?.detail?.message || errorData?.detail || errorData?.message || message;
+    } catch {
+      // ignore JSON parse failure on binary/error bodies
+    }
+
+    return {
+      ok: false,
+      warning: message,
+      status: response.status,
+    };
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return {
+    ok: true,
+    audioBase64: Buffer.from(arrayBuffer).toString("base64"),
+    audioMimeType: DEFAULT_AUDIO_MIME,
+  };
 }
 
 async function generateTutorText({
@@ -145,60 +280,80 @@ async function generateTutorText({
 
 async function synthesizeSpeech(text, voiceId) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey || !voiceId) {
+  if (!apiKey) {
     return {
       audioBase64: null,
       audioMimeType: null,
       provider: null,
-      warning: !apiKey
-        ? "ELEVENLABS_API_KEY is not configured"
-        : "ELEVENLABS_VOICE_ID is not configured",
+      voiceId: "",
+      voiceName: "",
+      warning: "ELEVENLABS_API_KEY is not configured",
     };
   }
 
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-    method: "POST",
-    headers: {
-      "xi-api-key": apiKey,
-      Accept: DEFAULT_AUDIO_MIME,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text,
-      model_id: process.env.ELEVENLABS_MODEL_ID || DEFAULT_ELEVENLABS_MODEL,
-      voice_settings: {
-        stability: 0.45,
-        similarity_boost: 0.8,
-        style: 0.2,
-        use_speaker_boost: true,
-      },
-    }),
-  });
+  try {
+    const resolvedVoice = await resolveVoiceSelection(apiKey, voiceId);
 
-  if (!response.ok) {
-    let message = "ElevenLabs speech synthesis failed";
-    try {
-      const errorData = await response.json();
-      message = errorData?.detail?.message || errorData?.detail || errorData?.message || message;
-    } catch {
-      // ignore JSON parse failure on binary/error bodies
+    if (!resolvedVoice.voiceId) {
+      return {
+        audioBase64: null,
+        audioMimeType: null,
+        provider: "elevenlabs",
+        voiceId: "",
+        voiceName: "",
+        warning: resolvedVoice.warning || "No ElevenLabs voice could be selected.",
+      };
     }
 
+    let speech = await requestSpeechFromElevenLabs({ apiKey, voiceId: resolvedVoice.voiceId, text });
+
+    if (!speech.ok && /voice.+not found/i.test(speech.warning || "")) {
+      const fallbackVoice = await resolveVoiceSelection(apiKey, "");
+
+      if (fallbackVoice.voiceId && fallbackVoice.voiceId !== resolvedVoice.voiceId) {
+        const retry = await requestSpeechFromElevenLabs({ apiKey, voiceId: fallbackVoice.voiceId, text });
+        if (retry.ok) {
+          return {
+            audioBase64: retry.audioBase64,
+            audioMimeType: retry.audioMimeType,
+            provider: "elevenlabs",
+            voiceId: fallbackVoice.voiceId,
+            voiceName: fallbackVoice.voiceName,
+            warning: `The configured ElevenLabs voice was not found. Using ${cleanText(fallbackVoice.voiceName, "another available voice")} instead.`,
+          };
+        }
+      }
+    }
+
+    if (!speech.ok) {
+      return {
+        audioBase64: null,
+        audioMimeType: null,
+        provider: "elevenlabs",
+        voiceId: resolvedVoice.voiceId,
+        voiceName: resolvedVoice.voiceName,
+        warning: speech.warning || resolvedVoice.warning || "ElevenLabs speech synthesis failed",
+      };
+    }
+
+    return {
+      audioBase64: speech.audioBase64,
+      audioMimeType: speech.audioMimeType,
+      provider: "elevenlabs",
+      voiceId: resolvedVoice.voiceId,
+      voiceName: resolvedVoice.voiceName,
+      warning: resolvedVoice.warning || "",
+    };
+  } catch (error) {
     return {
       audioBase64: null,
       audioMimeType: null,
       provider: "elevenlabs",
-      warning: message,
+      voiceId: "",
+      voiceName: "",
+      warning: error instanceof Error ? error.message : "ElevenLabs speech synthesis failed",
     };
   }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return {
-    audioBase64: Buffer.from(arrayBuffer).toString("base64"),
-    audioMimeType: DEFAULT_AUDIO_MIME,
-    provider: "elevenlabs",
-    warning: "",
-  };
 }
 
 export default async function handler(req, res) {
@@ -250,8 +405,9 @@ export default async function handler(req, res) {
       audioBase64: speech.audioBase64,
       audioMimeType: speech.audioMimeType,
       provider: speech.provider,
+      voiceName: speech.voiceName || "",
       warning: speech.warning || "",
-      voiceId: voiceId || "",
+      voiceId: speech.voiceId || voiceId || "",
       source: tutor.source,
     });
   } catch (error) {
