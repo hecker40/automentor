@@ -12,6 +12,7 @@ import {
   StreamVideo,
   StreamVideoClient,
   CallControls,
+  useCall,
   useCallStateHooks,
   SfuModels,
 } from "@stream-io/video-react-sdk";
@@ -19,34 +20,23 @@ import {
 import "@stream-io/video-react-sdk/dist/css/styles.css";
 
 const apiKey = import.meta.env.VITE_STREAM_API_KEY;
-const token = import.meta.env.VITE_STREAM_TOKEN;
-const userId = import.meta.env.VITE_STREAM_USER_ID || "mentorai-demo-user";
 const callId = import.meta.env.VITE_STREAM_CALL_ID || "mentorai-demo-call";
-const hasStreamConfig = Boolean(apiKey && token);
+const hasStreamConfig = Boolean(apiKey);
 
-const streamUser = {
-  id: userId,
-  name: import.meta.env.VITE_STREAM_USER_NAME || "Participant",
-  image: "https://getstream.io/random_svg/?id=participant&name=Participant",
-};
+function getStreamUser() {
+  const storageKey = "mentorai-stream-user-id";
+  let id = window.localStorage.getItem(storageKey);
+  if (!id) {
+    id = `mentorai-${crypto.randomUUID().replace(/-/g, "")}`;
+    window.localStorage.setItem(storageKey, id);
+  }
 
-const streamClient = hasStreamConfig
-  ? new StreamVideoClient({
-      apiKey,
-      user: streamUser,
-      token,
-    })
-  : null;
-
-const call = streamClient?.call("default", callId);
-if (call) {
-  call
-    .join({ create: true })
-    .then(() => {
-      call.camera.enable().catch(() => {});
-      call.microphone.enable().catch(() => {});
-    })
-    .catch(() => {});
+  const name = import.meta.env.VITE_STREAM_USER_NAME || "Participant";
+  return {
+    id,
+    name,
+    image: `https://getstream.io/random_svg/?id=${encodeURIComponent(id)}&name=${encodeURIComponent(name)}`,
+  };
 }
 
 const theme = {
@@ -754,6 +744,7 @@ function useIsTutor() {
 }
 
 function useSharedProblem(defaultText) {
+  const call = useCall();
   const [problem, setProblem] = useState(defaultText);
 
   useEffect(() => {
@@ -775,6 +766,7 @@ function useSharedProblem(defaultText) {
 }
 
 function useSharedSessionMeta(defaultMeta) {
+  const call = useCall();
   const [sessionMeta, setSessionMeta] = useState(defaultMeta);
   const sessionMetaRef = useRef(defaultMeta);
 
@@ -821,6 +813,7 @@ function useSharedSessionMeta(defaultMeta) {
 }
 
 function useSharedChat(isTutor) {
+  const call = useCall();
   const [messages, setMessages] = useState([]);
   const sentIdsRef = useRef(new Set());
 
@@ -857,6 +850,7 @@ function useSharedChat(isTutor) {
 // broadcast over the call's custom events so everyone in the room sees the
 // same purple insight card at the same time, not just the person who clicked.
 function useSharedAnalysis() {
+  const call = useCall();
   const [analysis, setAnalysis] = useState(null);
   const [analysisStatus, setAnalysisStatus] = useState("idle"); // 'idle' | 'loading' | 'success' | 'error'
   const [analysisError, setAnalysisError] = useState("");
@@ -1091,6 +1085,7 @@ function getReviewGradeTone(grade) {
 }
 
 function useSharedTutorReview() {
+  const call = useCall();
   const [assignment, setAssignment] = useState(null);
   const [lastRemoteSyncAt, setLastRemoteSyncAt] = useState(0);
   const assignmentRef = useRef(null);
@@ -1447,6 +1442,7 @@ const WHITEBOARD_WIDTH = 900;
 const WHITEBOARD_HEIGHT = 260;
 
 function useWhiteboard() {
+  const call = useCall();
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const isDrawingRef = useRef(false);
@@ -2796,16 +2792,78 @@ function MentorAIDemoInner() {
 }
 
 export default function MentorAIDemo() {
-  if (!streamClient || !call) {
+  const [videoSession, setVideoSession] = useState(null);
+  const [connectionError, setConnectionError] = useState("");
+
+  useEffect(() => {
+    if (!hasStreamConfig) return undefined;
+
+    let disposed = false;
+    const user = getStreamUser();
+    const tokenProvider = async () => {
+      const response = await fetch(`/api/stream-token?userId=${encodeURIComponent(user.id)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.token) throw new Error(data.error || "Unable to authenticate with the video service.");
+      return data.token;
+    };
+    const client = new StreamVideoClient({
+      apiKey,
+      user,
+      tokenProvider,
+      options: {
+        onConnectUserError: (error) => {
+          if (!disposed) setConnectionError(error.message || "Unable to connect to the video service.");
+        },
+      },
+    });
+    const nextCall = client.call("default", callId);
+
+    (async () => {
+      try {
+        await nextCall.join({ create: true });
+        if (disposed) return;
+        setVideoSession({ client, call: nextCall });
+        await Promise.allSettled([nextCall.camera.enable(), nextCall.microphone.enable()]);
+      } catch (error) {
+        if (!disposed) setConnectionError(error instanceof Error ? error.message : "Unable to join the video room.");
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      nextCall.leave().catch(() => {});
+      client.disconnectUser().catch(() => {});
+    };
+  }, []);
+
+  if (!hasStreamConfig) {
     return <MissingStreamConfiguration />;
   }
 
+  if (connectionError) return <VideoConnectionError message={connectionError} />;
+  if (!videoSession) return <VideoConnectionLoading />;
+
   return (
-    <StreamVideo client={streamClient}>
-      <StreamCall call={call}>
+    <StreamVideo client={videoSession.client}>
+      <StreamCall call={videoSession.call}>
         <MentorAIDemoInner />
       </StreamCall>
     </StreamVideo>
+  );
+}
+
+function VideoConnectionLoading() {
+  return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: theme.bg, color: theme.textMuted, fontFamily: fontBody }}>Connecting to video room…</div>;
+}
+
+function VideoConnectionError({ message }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, background: theme.bg, color: theme.text, fontFamily: fontBody }}>
+      <div style={{ maxWidth: 560, padding: 28, background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12 }}>
+        <h1 style={{ margin: "0 0 12px", fontSize: 22 }}>Couldn’t join the video room</h1>
+        <p style={{ margin: 0, color: theme.textMuted, lineHeight: 1.5 }}>{message}</p>
+      </div>
+    </div>
   );
 }
 
@@ -2833,9 +2891,8 @@ function MissingStreamConfiguration() {
       >
         <h1 style={{ margin: "0 0 12px", fontSize: 22 }}>Video setup required</h1>
         <p style={{ margin: 0, color: theme.textMuted, lineHeight: 1.5 }}>
-          Add <code>VITE_STREAM_API_KEY</code> and <code>VITE_STREAM_TOKEN</code> to your local
-          <code> .env</code> file, then restart the development server. The app will not attempt to
-          join a video call until those values are available.
+          Add <code>VITE_STREAM_API_KEY</code> in your environment. On Vercel, also add the
+          server-only <code>STREAM_API_SECRET</code> variable so the app can securely create video tokens.
         </p>
       </div>
     </div>
