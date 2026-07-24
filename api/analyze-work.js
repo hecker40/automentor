@@ -1,3 +1,10 @@
+import {
+  buildSkillBreakdown,
+  buildTargetedPractice,
+  normalizePracticeSet,
+  normalizeSkillBreakdown,
+} from "../shared/student-model.js";
+
 const DEFAULT_MODEL = "gpt-4o-mini";
 
 const fallbackAnalysis = {
@@ -12,6 +19,9 @@ const fallbackAnalysis = {
   ],
   strengths: [],
   nextSteps: [],
+  skillBreakdown: [],
+  targetedPractice: [],
+  adaptationNote: "Capture another clear checkpoint so MentorAI can refine its student model.",
 };
 
 function sendJson(res, status, payload) {
@@ -42,12 +52,12 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function cleanAnalysis(value) {
+function cleanAnalysis(value, context = {}) {
   const hasMeaningfulAnalysis = Boolean(
     value?.misconception || value?.explanation || value?.suggestedQuestion
   );
 
-  return {
+  const base = {
     misconception: value?.misconception || fallbackAnalysis.misconception,
     confidence: normalizeConfidence(value?.confidence, hasMeaningfulAnalysis),
     explanation: value?.explanation || fallbackAnalysis.explanation,
@@ -57,6 +67,31 @@ function cleanAnalysis(value) {
       : fallbackAnalysis.learningPath,
     strengths: Array.isArray(value?.strengths) ? value.strengths.slice(0, 3) : [],
     nextSteps: Array.isArray(value?.nextSteps) ? value.nextSteps.slice(0, 3) : [],
+  };
+
+  const heuristicBreakdown = buildSkillBreakdown({
+    analysis: base,
+    problem: context.problem,
+    subject: context.subject,
+  });
+  const skillBreakdown = normalizeSkillBreakdown(value?.skillBreakdown, heuristicBreakdown);
+  const targetedPractice = normalizePracticeSet(
+    value?.targetedPractice,
+    buildTargetedPractice({
+      analysis: { ...base, skillBreakdown },
+      problem: context.problem,
+      subject: context.subject,
+      studentName: context.studentName,
+    })
+  );
+
+  return {
+    ...base,
+    skillBreakdown,
+    targetedPractice,
+    adaptationNote:
+      value?.adaptationNote ||
+      `MentorAI will keep tracking ${skillBreakdown[0]?.skill?.toLowerCase() || "this concept"} and use it to shape the next check-in and practice set.`,
   };
 }
 
@@ -90,7 +125,7 @@ export default async function handler(req, res) {
     return sendJson(res, 400, { error: "Invalid JSON body" });
   }
 
-  const { problem, whiteboardImage, chatHistory = [] } = body || {};
+  const { problem, whiteboardImage, chatHistory = [], studentName = "Student", subject = "General" } = body || {};
 
   if (!whiteboardImage || typeof whiteboardImage !== "string") {
     return sendJson(res, 400, { error: "whiteboardImage is required" });
@@ -112,6 +147,8 @@ export default async function handler(req, res) {
     `Problem: ${problem || "No problem text provided"}`,
     `Recent chat: ${JSON.stringify(recentChat)}`,
     "",
+    `Student: ${studentName}`,
+    `Subject: ${subject}`,
     "Return this JSON shape:",
     "{",
     '  "misconception": "short label for the likely misconception, if the answer is right then please state that our answer is correct",',
@@ -120,13 +157,19 @@ export default async function handler(req, res) {
     '  "suggestedQuestion": "a Socratic question the tutor can ask next",',
     '  "learningPath": ["short guided step", "short guided practice step", "quick mastery check"],',
     '  "strengths": ["what the student did well"],',
-    '  "nextSteps": ["specific next tutoring move"]',
+    '  "nextSteps": ["specific next tutoring move"],',
+    '  "skillBreakdown": [{"skill": "Distribution", "status": "needs-support", "evidence": "what in the work points to this", "tutorMove": "what to do next"}],',
+    '  "targetedPractice": [{"title": "Distribution check", "prompt": "one tailored follow-up task", "reason": "why this helps this student now"}],',
+    '  "adaptationNote": "how MentorAI should adjust the next practice or question based on this analysis"',
     "}",
     "",
     "Rules:",
     "- Confidence must be a number between 0 and 1.",
     "- If the work is readable and you can infer a real misconception, confidence should usually be between 0.45 and 0.95, not 0.",
     "- The learningPath should be simple, supportive, and no more than 3 steps.",
+    "- skillBreakdown should identify the exact step or concept the student is struggling with, not a generic subject label.",
+    "- targetedPractice should feel personalized to the mistake pattern you observed, not generic homework.",
+    "- adaptationNote should explain how the next tutor move changes because of this checkpoint.",
   ].join("\n");
 
   try {
@@ -161,7 +204,15 @@ export default async function handler(req, res) {
     const content = data?.choices?.[0]?.message?.content;
     const parsed = content ? JSON.parse(content) : fallbackAnalysis;
 
-    return sendJson(res, 200, cleanAnalysis(parsed));
+    return sendJson(
+      res,
+      200,
+      cleanAnalysis(parsed, {
+        problem,
+        subject,
+        studentName,
+      })
+    );
   } catch (error) {
     return sendJson(res, 500, {
       error: error instanceof Error ? error.message : "Analysis failed",

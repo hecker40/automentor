@@ -1,3 +1,5 @@
+import { buildAdaptiveProfile } from "../shared/student-model.js";
+
 const DEFAULT_MODEL = "gpt-4o-mini";
 
 function sendJson(res, status, payload) {
@@ -133,6 +135,14 @@ function buildHeuristicSummary(studentName, sessions, subjectStats = []) {
   const topStrengths = topItems(strengthCounts, 3);
   const topFocusAreas = topItems(misconceptionCounts, 3);
   const conversationSignals = buildConversationSignals(sessions);
+  const adaptiveProfile = buildAdaptiveProfile({
+    studentName,
+    sessions,
+    observations,
+    subjectStats,
+    latestObservation: observations[observations.length - 1] || null,
+    topMisconceptions: topFocusAreas.map((label) => ({ label })),
+  });
 
   return {
     summary:
@@ -140,17 +150,24 @@ function buildHeuristicSummary(studentName, sessions, subjectStats = []) {
         ? `${studentName} has ${sessions.length} saved session${sessions.length === 1 ? "" : "s"} and ${observations.length} analyzed whiteboard checkpoints. Overall confidence is ${clampPercent(average(confidenceValues) * 100)}%.`
         : `No saved analyses yet for ${studentName}.`,
     learningStyle:
-      observations.length > 0
-        ? [
-            "Benefits from guided questioning",
-            "Responds well to concrete step-by-step correction",
-          ]
-        : ["Collect more sessions to infer learning style"],
+      adaptiveProfile.learningStyle?.length
+        ? adaptiveProfile.learningStyle
+        : observations.length > 0
+          ? [
+              "Benefits from guided questioning",
+              "Responds well to concrete step-by-step correction",
+            ]
+          : ["Collect more sessions to infer learning style"],
     strengths: topStrengths.length ? topStrengths : ["No recurring strengths captured yet"],
     focusAreas: topFocusAreas.length ? topFocusAreas : ["No recurring focus area captured yet"],
     latestLessonRecap: buildLatestLessonRecap(studentName, sessions, subjectStats),
     conversationSignals,
     reviewVideoBrief: buildReviewVideoBrief(studentName, sessions, subjectStats),
+    adaptationSummary: adaptiveProfile.adaptationSummary,
+    focusSkills: adaptiveProfile.focusSkills,
+    effectivePracticeModes: adaptiveProfile.effectivePracticeModes,
+    nextSessionPlan: adaptiveProfile.nextSessionPlan,
+    evolutionLoop: adaptiveProfile.evolutionLoop,
     subjectProfiles: subjectStats.slice(0, 4).map((subject) => ({
       subject: subject.subject,
       masteryPct: subject.masteryPct,
@@ -187,6 +204,26 @@ function cleanProfile(value, fallback) {
       closingTakeaway:
         value?.reviewVideoBrief?.closingTakeaway || fallback.reviewVideoBrief?.closingTakeaway || "",
     },
+    adaptationSummary: value?.adaptationSummary || fallback.adaptationSummary || "",
+    focusSkills: Array.isArray(value?.focusSkills)
+      ? value.focusSkills.slice(0, 4).map((item, index) => ({
+          skill: item?.skill || fallback.focusSkills?.[index]?.skill || `Focus area ${index + 1}`,
+          occurrences: Math.max(1, Number(item?.occurrences ?? fallback.focusSkills?.[index]?.occurrences ?? 1)),
+          note: item?.note || fallback.focusSkills?.[index]?.note || "Recurring focus from recent work.",
+        }))
+      : fallback.focusSkills,
+    effectivePracticeModes: Array.isArray(value?.effectivePracticeModes)
+      ? value.effectivePracticeModes.slice(0, 4).map((item, index) => ({
+          mode: item?.mode || fallback.effectivePracticeModes?.[index]?.mode || "Practice",
+          attempts: Math.max(0, Number(item?.attempts ?? fallback.effectivePracticeModes?.[index]?.attempts ?? 0)),
+          passRate: clampPercent(Number(item?.passRate ?? fallback.effectivePracticeModes?.[index]?.passRate ?? 0)),
+          note: item?.note || fallback.effectivePracticeModes?.[index]?.note || "Still collecting evidence.",
+        }))
+      : fallback.effectivePracticeModes,
+    nextSessionPlan: Array.isArray(value?.nextSessionPlan)
+      ? value.nextSessionPlan.slice(0, 4)
+      : fallback.nextSessionPlan,
+    evolutionLoop: value?.evolutionLoop || fallback.evolutionLoop || "",
     subjectProfiles: Array.isArray(value?.subjectProfiles)
       ? value.subjectProfiles.slice(0, 4).map((profile, index) => ({
           subject: profile?.subject || fallback.subjectProfiles[index]?.subject || "General",
@@ -261,6 +298,9 @@ export default async function handler(req, res) {
           suggestedQuestion: entry?.analysis?.suggestedQuestion,
           strengths: entry?.analysis?.strengths,
           nextSteps: entry?.analysis?.nextSteps,
+          skillBreakdown: Array.isArray(entry?.analysis?.skillBreakdown) ? entry.analysis.skillBreakdown.slice(0, 4) : [],
+          targetedPractice: Array.isArray(entry?.analysis?.targetedPractice) ? entry.analysis.targetedPractice.slice(0, 4) : [],
+          adaptationNote: entry?.analysis?.adaptationNote || "",
         }))
       : [],
   }));
@@ -289,10 +329,16 @@ export default async function handler(req, res) {
     '  "latestLessonRecap": "2-3 sentence tutor-facing recap of the latest lesson",',
     '  "conversationSignals": ["short note about hesitation, clarity, or prompting patterns"],',
     '  "reviewVideoBrief": {"title": "short title", "summary": "what the recap video should cover", "beats": ["story beat"], "closingTakeaway": "ending lesson takeaway"},',
+    '  "adaptationSummary": "how the agent is updating its approach from repeated patterns",',
+    '  "focusSkills": [{"skill": "Distribution", "occurrences": 3, "note": "what keeps showing up"}],',
+    '  "effectivePracticeModes": [{"mode": "Quiz", "attempts": 4, "passRate": 75, "note": "what seems to work best"}],',
+    '  "nextSessionPlan": ["specific opening move for the next session"],',
+    '  "evolutionLoop": "one sentence on how MentorAI changes future practice from prior results",',
     '  "subjectProfiles": [{"subject": "Algebra", "masteryPct": 72, "trend": "Improving", "notes": "short note"}],',
     '  "recommendedTutorMoves": ["specific next teaching move"]',
     "}",
-    "Also use recent messages, tutor prompts, assigned review items, and student responses when they help explain how the lesson unfolded.",
+    "Also use recent messages, tutor prompts, assigned review items, student responses, skill breakdowns, targeted practice, and pass versus retry outcomes when they help explain how the lesson unfolded.",
+    "Notice exact recurring process-level difficulties like distribution, sign handling, combining like terms, setup, or multi-step equation flow, not just broad subject labels.",
     "Notice hesitation or clarity cues like uncertainty, pauses, or 'I get it' moments, but keep them secondary to the actual academic recap.",
   ].join("\n");
 
@@ -324,5 +370,3 @@ export default async function handler(req, res) {
     return sendJson(res, 200, fallback);
   }
 }
-
-// add code

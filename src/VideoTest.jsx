@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useId, useCallback } from "react";
 import {
   Pencil, Eraser, Undo2, Redo2, Download,
   Trash2, Sparkles, Send, AlertTriangle, CheckCircle2,
@@ -16,6 +16,11 @@ import {
   SfuModels,
 } from "@stream-io/video-react-sdk";
 
+import {
+  buildAdaptiveProfile,
+  buildSkillBreakdown,
+  buildTargetedPractice,
+} from "../shared/student-model.js";
 import "@stream-io/video-react-sdk/dist/css/styles.css";
 
 const apiKey = import.meta.env.VITE_STREAM_API_KEY;
@@ -114,35 +119,6 @@ function normalizeConfidenceScore(value, hasMeaningfulAnalysis = false) {
   if (parsed === 0 && hasMeaningfulAnalysis) return 0.62;
   if (parsed >= 0 && parsed <= 1) return parsed;
   return 0;
-}
-
-function getConfidenceTone(confidence) {
-  const normalized = normalizeConfidenceScore(confidence);
-
-  if (normalized >= 0.75) {
-    return {
-      pct: clampPercent(normalized * 100),
-      color: theme.greenLight,
-      background: theme.greenSoft,
-      border: "#BCE4C8",
-    };
-  }
-
-  if (normalized >= 0.45) {
-    return {
-      pct: clampPercent(normalized * 100),
-      color: theme.purpleLight,
-      background: theme.purpleSoft,
-      border: "#DDD7F9",
-    };
-  }
-
-  return {
-    pct: clampPercent(normalized * 100),
-    color: theme.red,
-    background: theme.redSoft,
-    border: "#F3CACA",
-  };
 }
 
 function getInsightCardTone(analysis) {
@@ -465,6 +441,14 @@ function buildFallbackProfile(studentName, stats) {
   const strengths = stats.topStrengths.map((item) => item.label);
   const focusAreas = stats.topMisconceptions.map((item) => item.label);
   const conversationSignals = buildConversationSignalsFromSessions(stats.sessions);
+  const adaptiveProfile = buildAdaptiveProfile({
+    studentName,
+    sessions: stats.sessions,
+    observations: stats.observations,
+    subjectStats: stats.subjectStats,
+    latestObservation: stats.latestObservation,
+    topMisconceptions: stats.topMisconceptions,
+  });
   const subjectProfiles = stats.subjectStats.slice(0, 4).map((subject) => ({
     subject: subject.subject,
     masteryPct: subject.masteryPct,
@@ -493,6 +477,11 @@ function buildFallbackProfile(studentName, stats) {
     latestLessonRecap: buildLatestLessonRecap(studentName, stats.sessions, stats),
     conversationSignals,
     reviewVideoBrief: buildFallbackVideoBrief(studentName, stats.sessions, stats),
+    adaptationSummary: adaptiveProfile.adaptationSummary,
+    focusSkills: adaptiveProfile.focusSkills,
+    effectivePracticeModes: adaptiveProfile.effectivePracticeModes,
+    nextSessionPlan: adaptiveProfile.nextSessionPlan,
+    evolutionLoop: adaptiveProfile.evolutionLoop,
     recommendedTutorMoves: stats.latestObservation?.analysis?.nextSteps?.length
       ? stats.latestObservation.analysis.nextSteps
       : stats.latestObservation?.analysis?.suggestedQuestion
@@ -902,6 +891,13 @@ function useSharedAnalysis() {
 function buildSuggestedReviewAssignment({ analysis, subject, studentName, problem }) {
   const safeSubject = normalizeLabel(subject, "Subject");
   const safeStudent = normalizeLabel(studentName, "Student");
+  const skillBreakdown = Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
+    ? analysis.skillBreakdown.slice(0, 3)
+    : buildSkillBreakdown({ analysis, problem, subject: safeSubject });
+  const targetedPractice = Array.isArray(analysis?.targetedPractice) && analysis.targetedPractice.length
+    ? analysis.targetedPractice.slice(0, 3)
+    : buildTargetedPractice({ analysis: { ...analysis, skillBreakdown }, problem, subject: safeSubject, studentName: safeStudent });
+  const topSkill = skillBreakdown[0]?.skill || safeSubject;
   const learningPath = Array.isArray(analysis?.learningPath) && analysis.learningPath.length
     ? analysis.learningPath.slice(0, 3)
     : [
@@ -909,18 +905,21 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
         analysis?.suggestedQuestion || "Answer one quick check question out loud.",
         `Try one fresh ${safeSubject.toLowerCase()} example and explain each step.`,
       ];
-  const misconception = analysis?.misconception || `the current ${safeSubject.toLowerCase()} concept`;
+  const misconception = analysis?.misconception || `the current ${topSkill.toLowerCase()} step`;
   const quickCheck =
+    targetedPractice[0]?.prompt ||
     analysis?.suggestedQuestion ||
     `What is the next correct step you should take when working through ${misconception.toLowerCase()}?`;
-  const practicePrompt = problem
-    ? `Redo this style of problem and narrate each step: ${problem}`
-    : `Work one short ${safeSubject.toLowerCase()} example that uses this idea and show each step clearly.`;
+  const practicePrompt =
+    targetedPractice[1]?.prompt ||
+    (problem
+      ? `Redo this style of problem and narrate the ${topSkill.toLowerCase()} step clearly: ${problem}`
+      : `Work one short ${safeSubject.toLowerCase()} example that uses ${topSkill.toLowerCase()} and show each step clearly.`);
 
   return {
     id: `review-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    title: `${safeSubject} suggested review`,
-    summary: `Built from ${safeStudent}'s latest guided learning path.`,
+    title: `${topSkill} suggested review`,
+    summary: `Built from ${safeStudent}'s latest ${topSkill.toLowerCase()} checkpoint.`,
     createdAt: new Date().toISOString(),
     updatedAt: Date.now(),
     learningPath,
@@ -928,20 +927,26 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
       {
         id: "review",
         kind: "Review",
-        prompt: `In your own words, explain this idea: ${learningPath[0]}`,
-        coachNote: "Listen for whether the student can restate the concept without copying the prompt.",
+        prompt: `In your own words, explain how to handle the ${topSkill.toLowerCase()} step in this kind of problem.`,
+        coachNote:
+          skillBreakdown[0]?.tutorMove ||
+          "Listen for whether the student can restate the concept without copying the prompt.",
       },
       {
         id: "quiz",
         kind: "Quiz",
         prompt: quickCheck,
-        coachNote: `Use this to check whether the confusion around ${misconception.toLowerCase()} is clearing up.`,
+        coachNote:
+          targetedPractice[0]?.reason ||
+          `Use this to check whether the confusion around ${misconception.toLowerCase()} is clearing up.`,
       },
       {
         id: "exercise",
         kind: "Exercise",
         prompt: practicePrompt,
-        coachNote: "Look for accurate steps, pacing, and whether the student can explain why each step works.",
+        coachNote:
+          targetedPractice[1]?.reason ||
+          "Look for accurate steps, pacing, and whether the student can explain why each step works.",
       },
     ],
     responses: {},
@@ -990,8 +995,8 @@ function flipSimpleOperator(problem) {
     return text.replace(/\+\s*(\d+)/, (_, value) => `- ${Number(value) + 1}`);
   }
 
-  if (/\-\s*\d/.test(text)) {
-    return text.replace(/\-\s*(\d+)/, (_, value) => `+ ${Number(value) + 1}`);
+  if (/-\s*\d/.test(text)) {
+    return text.replace(/-\s*(\d+)/, (_, value) => `+ ${Number(value) + 1}`);
   }
 
   return text;
@@ -1004,20 +1009,57 @@ function buildSuggestedQuestions({ analysis, studentStats, subject, problem }) {
     .filter(Boolean)
     .slice(-6);
   const baseProblem = String(problem || previousPrompts[previousPrompts.length - 1] || "").trim();
+  const skillBreakdown = Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
+    ? analysis.skillBreakdown.slice(0, 3)
+    : buildSkillBreakdown({ analysis, problem: baseProblem, subject: safeSubject });
+  const targetedPractice = Array.isArray(analysis?.targetedPractice) && analysis.targetedPractice.length
+    ? analysis.targetedPractice.slice(0, 3)
+    : buildTargetedPractice({ analysis: { ...analysis, skillBreakdown }, problem: baseProblem, subject: safeSubject });
+  const topSkill = skillBreakdown[0]?.skill || analysis?.misconception || safeSubject;
+  const misconception = String(analysis?.misconception || topSkill).trim();
 
-  if (!baseProblem) return [];
+  const conceptualSuggestions = [
+    analysis?.suggestedQuestion
+      ? {
+          prompt: cleanQuestionText(
+            analysis.suggestedQuestion,
+            `What should you check first when doing ${topSkill.toLowerCase()}?`
+          ),
+          note: `Focuses on ${topSkill.toLowerCase()}`,
+        }
+      : null,
+    ...targetedPractice.map((item, index) => ({
+      prompt: item.prompt,
+      note: item.reason || `Personalized ${index === 0 ? "check" : "practice"}`,
+    })),
+    {
+      prompt: cleanQuestionText(
+        `Explain why the ${topSkill.toLowerCase()} step works before you simplify anything else`,
+        `Explain why the ${topSkill.toLowerCase()} step works`
+      ),
+      note: `Checks whether ${misconception.toLowerCase()} is clearing up`,
+    },
+  ].filter((item) => String(item?.prompt || "").trim());
+
+  if (!baseProblem) {
+    return conceptualSuggestions.slice(0, 5).map((item, index) => ({
+      ...item,
+      id: `suggested-question-concept-${index}`,
+    }));
+  }
 
   const baseProblemNormalized = baseProblem.replace(/\s+/g, " ");
   const subjectLower = safeSubject.toLowerCase();
 
   const suggestionPool = [
+    ...conceptualSuggestions,
     {
       prompt: mutateProblemText(baseProblemNormalized, (value, index) => (index === 0 ? value + 1 : value)),
-      note: "Close review",
+      note: `Close ${topSkill.toLowerCase()} review`,
     },
     {
       prompt: mutateProblemText(baseProblemNormalized, (value, index) => (index <= 1 ? value + 1 : value + 2)),
-      note: "Same pattern",
+      note: `Same ${topSkill.toLowerCase()} pattern`,
     },
     {
       prompt: mutateProblemText(baseProblemNormalized, (value, index, total) =>
@@ -1037,7 +1079,7 @@ function buildSuggestedQuestions({ analysis, studentStats, subject, problem }) {
         if (index === 1) return value + 3;
         return value + 4;
       }),
-      note: "Further review",
+      note: `${topSkill} reinforcement`,
     },
   ];
 
@@ -1196,7 +1238,8 @@ function useSharedTutorReview() {
 }
 
 function useStudentProfileAnalytics(studentName) {
-  const sessionIdRef = useRef(`session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const reactId = useId();
+  const sessionIdRef = useRef(`session-${reactId.replace(/:/g, "")}`);
   const studentKey = slugifyStudentName(studentName);
 
   const [analyticsStore, setAnalyticsStore] = useState(() => loadAnalyticsStore());
@@ -1219,7 +1262,7 @@ function useStudentProfileAnalytics(studentName) {
     })
     .join("||");
 
-  const updateSessionRecord = (prev, activeStudentName, subject, mutate) => {
+  const updateSessionRecord = useCallback((prev, activeStudentName, subject, mutate) => {
     const createdAt = new Date().toISOString();
     const normalizedStudent = normalizeLabel(activeStudentName, "Student");
     const normalizedSubject = normalizeLabel(subject, "General");
@@ -1264,15 +1307,19 @@ function useStudentProfileAnalytics(studentName) {
       version: 2,
       sessions,
     };
-  };
+  }, [studentKey]);
 
   useEffect(() => {
     saveAnalyticsStore(analyticsStore);
   }, [analyticsStore]);
 
   useEffect(() => {
-    setProfileSummary(loadCachedProfile(studentKey));
-    setProfileError("");
+    const timeout = window.setTimeout(() => {
+      setProfileSummary(loadCachedProfile(studentKey));
+      setProfileError("");
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
   }, [studentKey]);
 
   useEffect(() => {
@@ -1292,7 +1339,7 @@ function useStudentProfileAnalytics(studentName) {
     return () => window.removeEventListener("storage", handleStorage);
   }, [studentKey]);
 
-  const refreshProfile = async (snapshot = studentStats) => {
+  const refreshProfile = useCallback(async (snapshot = studentStats) => {
     if (!snapshot.totalAnalyses) {
       setProfileStatus("idle");
       return;
@@ -1325,7 +1372,7 @@ function useStudentProfileAnalytics(studentName) {
       setProfileError(error instanceof Error ? error.message : "Profile summary failed");
       setProfileStatus("error");
     }
-  };
+  }, [studentKey, studentName, studentStats]);
 
   useEffect(() => {
     if (!studentStats.totalAnalyses) return;
@@ -1334,9 +1381,9 @@ function useStudentProfileAnalytics(studentName) {
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [studentKey, profileFingerprint]);
+  }, [studentKey, profileFingerprint, refreshProfile, studentStats]);
 
-  const syncSessionContext = ({ studentName: activeStudentName, subject, problem, messages, assignment }) => {
+  const syncSessionContext = useCallback(({ studentName: activeStudentName, subject, problem, messages, assignment }) => {
     setAnalyticsStore((prev) =>
       updateSessionRecord(prev, activeStudentName, subject, (session) => {
         const normalizedAssignment = normalizeStoredAssignment(assignment);
@@ -1360,7 +1407,7 @@ function useStudentProfileAnalytics(studentName) {
         };
       })
     );
-  };
+  }, [updateSessionRecord]);
 
   const recordSuggestedPrompt = ({ studentName: activeStudentName, subject, prompt }) => {
     const createdAt = new Date().toISOString();
@@ -1397,6 +1444,22 @@ function useStudentProfileAnalytics(studentName) {
         Boolean(analysis?.misconception || analysis?.explanation || analysis?.suggestedQuestion)
       ),
       learningPath: Array.isArray(analysis?.learningPath) ? analysis.learningPath.slice(0, 3) : [],
+      skillBreakdown: Array.isArray(analysis?.skillBreakdown)
+        ? analysis.skillBreakdown.slice(0, 4).map((item, index) => ({
+            skill: normalizeLabel(item?.skill, `Focus area ${index + 1}`),
+            status: normalizeLabel(item?.status, index === 0 ? "needs-support" : "developing"),
+            evidence: String(item?.evidence || "Observed in the latest work.").trim().slice(0, 220),
+            tutorMove: String(item?.tutorMove || "Ask the student to explain that step before moving on.").trim().slice(0, 220),
+          }))
+        : [],
+      targetedPractice: Array.isArray(analysis?.targetedPractice)
+        ? analysis.targetedPractice.slice(0, 4).map((item, index) => ({
+            title: normalizeLabel(item?.title, `Targeted practice ${index + 1}`),
+            prompt: String(item?.prompt || "").trim().slice(0, 320),
+            reason: String(item?.reason || "Chosen from the student's recent work.").trim().slice(0, 220),
+          }))
+        : [],
+      adaptationNote: String(analysis?.adaptationNote || "").trim().slice(0, 240),
     };
 
     setAnalyticsStore((prev) => {
@@ -1654,12 +1717,70 @@ function MentorAIDemoInner() {
     refreshProfile,
   } = useStudentProfileAnalytics(displayStudentName);
   const effectiveProfile = profileSummary || buildFallbackProfile(displayStudentName, studentStats);
+  const adaptiveProfile = buildAdaptiveProfile({
+    studentName: displayStudentName,
+    sessions: studentStats.sessions,
+    observations: studentStats.observations,
+    subjectStats: studentStats.subjectStats,
+    latestObservation: studentStats.latestObservation,
+    topMisconceptions: studentStats.topMisconceptions,
+  });
   const lastUpdatedLabel = studentStats.lastUpdatedAt
     ? new Date(studentStats.lastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
     : "Live";
   const insightCardTone = getInsightCardTone(analysis);
   const assignmentSourceAnalysis = analysis || studentStats.latestObservation?.analysis || null;
   const assignmentSourceProblem = problem || studentStats.latestObservation?.problem || "";
+  const currentAnalysisSkillBreakdown = analysis
+    ? (Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
+        ? analysis.skillBreakdown
+        : buildSkillBreakdown({ analysis, problem, subject: displaySubject }))
+    : [];
+  const currentTargetedPractice = analysis
+    ? (Array.isArray(analysis?.targetedPractice) && analysis.targetedPractice.length
+        ? analysis.targetedPractice
+        : buildTargetedPractice({
+            analysis: { ...analysis, skillBreakdown: currentAnalysisSkillBreakdown },
+            problem,
+            subject: displaySubject,
+            studentName: displayStudentName,
+          }))
+    : [];
+  const latestAnalysisSkillBreakdown = assignmentSourceAnalysis
+    ? (Array.isArray(assignmentSourceAnalysis?.skillBreakdown) && assignmentSourceAnalysis.skillBreakdown.length
+        ? assignmentSourceAnalysis.skillBreakdown
+        : buildSkillBreakdown({
+            analysis: assignmentSourceAnalysis,
+            problem: assignmentSourceProblem,
+            subject: displaySubject,
+          }))
+    : [];
+  const latestTargetedPractice = assignmentSourceAnalysis
+    ? (Array.isArray(assignmentSourceAnalysis?.targetedPractice) && assignmentSourceAnalysis.targetedPractice.length
+        ? assignmentSourceAnalysis.targetedPractice
+        : buildTargetedPractice({
+            analysis: { ...assignmentSourceAnalysis, skillBreakdown: latestAnalysisSkillBreakdown },
+            problem: assignmentSourceProblem,
+            subject: displaySubject,
+            studentName: displayStudentName,
+          }))
+    : [];
+  const effectiveFocusSkills = (effectiveProfile.focusSkills || []).length
+    ? effectiveProfile.focusSkills
+    : adaptiveProfile.focusSkills;
+  const effectivePracticeModes = (effectiveProfile.effectivePracticeModes || []).length
+    ? effectiveProfile.effectivePracticeModes
+    : adaptiveProfile.effectivePracticeModes;
+  const nextSessionPlan = (effectiveProfile.nextSessionPlan || []).length
+    ? effectiveProfile.nextSessionPlan
+    : adaptiveProfile.nextSessionPlan;
+  const adaptationSummary = effectiveProfile.adaptationSummary || adaptiveProfile.adaptationSummary;
+  const evolutionLoop = effectiveProfile.evolutionLoop || adaptiveProfile.evolutionLoop;
+  const repeatedFocusSkill =
+    effectiveFocusSkills[0]?.skill ||
+    currentAnalysisSkillBreakdown[0]?.skill ||
+    studentStats.topMisconceptions[0]?.label ||
+    displaySubject;
   const suggestedQuestions = buildSuggestedQuestions({
     analysis: assignmentSourceAnalysis,
     studentStats,
@@ -1669,9 +1790,13 @@ function MentorAIDemoInner() {
   const hasQuestionSuggestions = Boolean(assignmentSourceAnalysis && suggestedQuestions.length);
 
   useEffect(() => {
-    if (lastRemoteSyncAt) {
+    if (!lastRemoteSyncAt) return undefined;
+
+    const timeout = window.setTimeout(() => {
       setMentorTab("recs");
-    }
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
   }, [lastRemoteSyncAt]);
 
   useEffect(() => {
@@ -1686,7 +1811,7 @@ function MentorAIDemoInner() {
     }, 450);
 
     return () => window.clearTimeout(timeout);
-  }, [displayStudentName, displaySubject, problem, messages, assignment]);
+  }, [displayStudentName, displaySubject, problem, messages, assignment, syncSessionContext]);
 
   const handleAssignSuggestedReview = () => {
     if (!assignmentSourceAnalysis) return;
@@ -1720,6 +1845,8 @@ function MentorAIDemoInner() {
           problem,
           whiteboardImage: dataUrl,
           chatHistory: messages,
+          studentName: displayStudentName,
+          subject: displaySubject,
         }),
       });
 
@@ -2149,6 +2276,22 @@ function MentorAIDemoInner() {
                       ))}
                     </div>
                   )}
+                  {analysis.adaptationNote && (
+                    <div
+                      style={{
+                        background: "#fff",
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: 8,
+                        padding: "10px 12px",
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                        marginBottom: 10,
+                      }}
+                    >
+                      <span style={{ color: theme.textMuted }}>Next adaptation: </span>
+                      {analysis.adaptationNote}
+                    </div>
+                  )}
                   <div
                     style={{
                       background: insightCardTone.surface,
@@ -2161,6 +2304,34 @@ function MentorAIDemoInner() {
                     <span style={{ color: theme.textMuted }}>Suggested question: </span>
                     "{analysis.suggestedQuestion}"
                   </div>
+                  {currentAnalysisSkillBreakdown.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
+                        Focus skill map
+                      </div>
+                      <div
+                        style={{
+                          background: "#fff",
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                        }}
+                      >
+                        {currentAnalysisSkillBreakdown.slice(0, 3).map((item) => (
+                          <div key={`${item.skill}-${item.status}`} style={{ marginBottom: 10, lineHeight: 1.55 }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{item.skill}</div>
+                              <div style={{ fontSize: 11, color: item.status === "solid" ? theme.green : theme.amber }}>
+                                {item.status.replace(/-/g, " ")}
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 12, color: theme.textMuted }}>{item.evidence}</div>
+                            <div style={{ fontSize: 12, marginTop: 4 }}>Tutor move: {item.tutorMove}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {analysis.learningPath?.length > 0 && (
                     <div style={{ marginTop: 12 }}>
                       <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
@@ -2191,6 +2362,29 @@ function MentorAIDemoInner() {
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {currentTargetedPractice.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
+                        Targeted practice queue
+                      </div>
+                      {currentTargetedPractice.slice(0, 3).map((item) => (
+                        <div
+                          key={`${item.title}-${item.prompt}`}
+                          style={{
+                            background: "#fff",
+                            border: `1px solid ${theme.border}`,
+                            borderRadius: 8,
+                            padding: "10px 12px",
+                            marginBottom: 8,
+                          }}
+                        >
+                          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{item.title}</div>
+                          <div style={{ fontSize: 12, lineHeight: 1.55, marginBottom: 4 }}>{item.prompt}</div>
+                          <div style={{ fontSize: 11, color: theme.textMuted }}>{item.reason}</div>
+                        </div>
+                      ))}
                     </div>
                   )}
                   {analysis.nextSteps?.length > 0 && (
@@ -2276,6 +2470,47 @@ function MentorAIDemoInner() {
                         <div style={{ fontSize: 13, lineHeight: 1.5 }}>
                           {analysis.explanation}
                         </div>
+                      </div>
+                    )}
+
+                    {adaptationSummary && (
+                      <div
+                        style={{
+                          marginBottom: 12,
+                          background: theme.amberSoft,
+                          border: "1px solid #EEDCB6",
+                          borderRadius: 8,
+                          padding: 12,
+                        }}
+                      >
+                        <div style={{ fontSize: 12, color: theme.amber, fontWeight: 600, marginBottom: 4 }}>
+                          Adaptive loop
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.55 }}>{adaptationSummary}</div>
+                      </div>
+                    )}
+
+                    {effectiveFocusSkills.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Recurring focus skills</div>
+                        {effectiveFocusSkills.slice(0, 3).map((item) => (
+                          <div
+                            key={item.skill}
+                            style={{
+                              background: "#fff",
+                              border: `1px solid ${theme.border}`,
+                              borderRadius: 8,
+                              padding: "10px 12px",
+                              marginBottom: 8,
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{item.skill}</div>
+                              <div style={{ fontSize: 11, color: theme.textMuted }}>{item.occurrences} signals</div>
+                            </div>
+                            <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 1.55 }}>{item.note}</div>
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -2429,6 +2664,36 @@ function MentorAIDemoInner() {
                       </>
                     )}
 
+                    {effectiveFocusSkills.length > 0 && (
+                      <>
+                        <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
+                          Focus skill map
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                          {effectiveFocusSkills.slice(0, 4).map((item) => (
+                            <div key={item.skill}>
+                              &#10003; <strong>{item.skill}</strong>, {item.note}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    {effectivePracticeModes.length > 0 && (
+                      <>
+                        <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
+                          Interventions that are landing
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                          {effectivePracticeModes.slice(0, 3).map((item) => (
+                            <div key={item.mode}>
+                              &#10003; <strong>{item.mode}</strong>, {item.passRate}% pass rate across {item.attempts} tries
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
                     <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
                       Observed strengths
                     </div>
@@ -2437,6 +2702,19 @@ function MentorAIDemoInner() {
                         <div key={item}>&#10003; {item}</div>
                       ))}
                     </div>
+
+                    {nextSessionPlan.length > 0 && (
+                      <>
+                        <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
+                          Next session plan
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                          {nextSessionPlan.slice(0, 3).map((item) => (
+                            <div key={item}>&#10003; {item}</div>
+                          ))}
+                        </div>
+                      </>
+                    )}
 
                     {effectiveProfile.reviewVideoBrief?.summary && (
                       <>
@@ -2469,6 +2747,12 @@ function MentorAIDemoInner() {
                           )}
                         </div>
                       </>
+                    )}
+
+                    {evolutionLoop && (
+                      <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, lineHeight: 1.6 }}>
+                        {evolutionLoop}
+                      </div>
                     )}
                   </>
                 )}
@@ -2664,15 +2948,15 @@ function MentorAIDemoInner() {
                         Repeated pattern
                       </div>
                       <div style={{ fontSize: 13, color: theme.text }}>
-                        {studentStats.topMisconceptions[0]
-                          ? `${displayStudentName} most often gets stuck on ${studentStats.topMisconceptions[0].label.toLowerCase()}.`
+                        {repeatedFocusSkill
+                          ? `${displayStudentName} most often needs support around ${String(repeatedFocusSkill).toLowerCase()}.`
                           : `MentorAI is still looking for a repeated misconception for ${displayStudentName}.`}
                       </div>
                     </div>
 
                     <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>Suggested action</div>
                     <div style={{ fontSize: 13, marginBottom: 14 }}>
-                      {analysis?.suggestedQuestion || effectiveProfile.recommendedTutorMoves?.[0] || "Capture another analysis for a tailored tutor move."}
+                      {analysis?.adaptationNote || analysis?.suggestedQuestion || nextSessionPlan[0] || effectiveProfile.recommendedTutorMoves?.[0] || "Capture another analysis for a tailored tutor move."}
                     </div>
 
                     {analysis?.learningPath?.length > 0 && (
@@ -2695,6 +2979,29 @@ function MentorAIDemoInner() {
                             </div>
                           ))}
                         </div>
+                      </>
+                    )}
+
+                    {latestTargetedPractice.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>Personalized practice</div>
+                        {latestTargetedPractice.slice(0, 3).map((item) => (
+                          <div
+                            key={`${item.title}-${item.prompt}`}
+                            style={{
+                              border: `1px solid ${theme.border}`,
+                              borderRadius: 8,
+                              padding: "10px 12px",
+                              fontSize: 13,
+                              background: "#fff",
+                              marginBottom: 10,
+                            }}
+                          >
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>{item.title}</div>
+                            <div style={{ lineHeight: 1.55, marginBottom: 4 }}>{item.prompt}</div>
+                            <div style={{ fontSize: 11, color: theme.textMuted }}>{item.reason}</div>
+                          </div>
+                        ))}
                       </>
                     )}
 
@@ -2721,6 +3028,23 @@ function MentorAIDemoInner() {
                         &#8594; {move}
                       </div>
                     ))}
+
+                    {evolutionLoop && (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          background: "#F7F6F1",
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: 8,
+                          padding: 12,
+                          fontSize: 12,
+                          color: theme.textMuted,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {evolutionLoop}
+                      </div>
+                    )}
                   </>
                 )}
               </div>
