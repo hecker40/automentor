@@ -2384,14 +2384,14 @@ function MentorAIDemoInner() {
               <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
                 Problem
                 <span style={{ color: theme.purple, fontWeight: 500, fontSize: 11 }}>
-                  &middot; generated live from the subject
+                  &middot; type your own or generate one from the subject
                 </span>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
                 <input
                   value={problem}
-                  readOnly
-                  placeholder="Choose a subject, then tap Suggested question"
+                  onChange={(e) => setProblem(e.target.value)}
+                  placeholder="Type your own question or tap Suggested question"
                   style={{
                     flex: 1,
                     fontFamily: fontMono,
@@ -2438,7 +2438,7 @@ function MentorAIDemoInner() {
 
               {!problemGeneratorError && (
                 <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 16 }}>
-                  The problem is generated from the live subject, then shared with the AI tutor for analysis.
+                  Type your own problem or use Suggested question to fill the box from the live subject.
                 </div>
               )}
 

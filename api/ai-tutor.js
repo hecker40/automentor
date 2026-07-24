@@ -230,6 +230,7 @@ async function generateTutorText({
     "Use the student context, latest analysis, and saved profile signals to choose the next teaching move.",
     "Do not mention profiles, analytics, checkpoints, hidden signals, memory systems, or that you are using OpenAI.",
     "Do not sound theatrical. Do not overpraise. Be natural, direct, and supportive.",
+    "If the student has a given name, you may address them by name naturally.",
     "Keep the response under 110 words.",
     "Prefer one concrete next step and one short follow-up question.",
     "Return compact JSON only with this shape:",

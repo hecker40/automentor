@@ -33,18 +33,20 @@ function clipText(value, max = 500) {
   return cleanText(value).slice(0, max);
 }
 
-function buildFallbackFeedback({ item, response, analysis, subject }) {
+function buildFallbackFeedback({ item, response, analysis, subject, studentName }) {
   const answer = cleanText(response);
   const misconception = cleanText(analysis?.misconception, "the main step");
   const itemKind = cleanText(item?.kind, "Quiz");
   const prompt = cleanText(item?.prompt, "the prompt");
   const safeSubject = cleanText(subject, "this topic");
+  const safeStudent = cleanText(studentName);
+  const directAddress = safeStudent ? `${safeStudent}, ` : "";
 
   if (!answer) {
     return {
       verdict: "retry",
-      explanation: `There is not enough written yet to evaluate this ${itemKind.toLowerCase()}. Add your full thinking for ${prompt}.`,
-      voiceSummary: `I need a fuller answer before I can check it. Write out your reasoning, then submit again.`,
+      explanation: `${directAddress}there is not enough written yet to evaluate this ${itemKind.toLowerCase()}. Add your full thinking for ${prompt}.`,
+      voiceSummary: `${directAddress}I need a fuller answer before I can check it. Write out your reasoning, then submit again.`,
       nextStep: `Write the next step and explain why it works.`,
       confidence: "low",
       source: "fallback",
@@ -59,8 +61,8 @@ function buildFallbackFeedback({ item, response, analysis, subject }) {
   if (looksComplete) {
     return {
       verdict: "pass",
-      explanation: `This answer looks directionally solid for ${safeSubject.toLowerCase()}. The main thing working in your favor is that you explained the ${misconception.toLowerCase()} step instead of only giving a short final answer.`,
-      voiceSummary: `That one is on track. Keep the same step-by-step explanation as you move to the next prompt.`,
+      explanation: `${directAddress}this answer looks directionally solid for ${safeSubject.toLowerCase()}. The main thing working in your favor is that you explained the ${misconception.toLowerCase()} step instead of only giving a short final answer.`,
+      voiceSummary: `${directAddress}that one is on track. Keep the same step-by-step explanation as you move to the next prompt.`,
       nextStep: `Move to the next prompt and keep naming each step out loud.`,
       confidence: "medium",
       source: "fallback",
@@ -69,8 +71,8 @@ function buildFallbackFeedback({ item, response, analysis, subject }) {
 
   return {
     verdict: "retry",
-    explanation: `This answer is still missing the key reasoning around ${misconception.toLowerCase()}. Right now it feels too short or skips the why behind the step.`,
-    voiceSummary: `You are close, but I still need the reasoning behind that step. Add why it works, then submit again.`,
+    explanation: `${directAddress}this answer is still missing the key reasoning around ${misconception.toLowerCase()}. Right now it feels too short or skips the why behind the step.`,
+    voiceSummary: `${directAddress}you are close, but I still need the reasoning behind that step. Add why it works, then submit again.`,
     nextStep: `Rewrite the answer with one explicit reason for the step you chose.`,
     confidence: "medium",
     source: "fallback",
@@ -79,7 +81,7 @@ function buildFallbackFeedback({ item, response, analysis, subject }) {
 
 async function generateFeedback({ studentName, subject, problem, item, response, analysis, learningPath, chatHistory }) {
   if (!process.env.OPENAI_API_KEY) {
-    return buildFallbackFeedback({ item, response, analysis, subject });
+    return buildFallbackFeedback({ item, response, analysis, subject, studentName });
   }
 
   const prompt = [
@@ -92,6 +94,7 @@ async function generateFeedback({ studentName, subject, problem, item, response,
     "Mark retry unless the answer clearly shows the right reasoning, not just a guess.",
     "Keep explanation under 120 words and voiceSummary under 45 words.",
     "Speak directly to the learner using second person, like you and your.",
+    "If a given name is available, you may address the learner by name naturally.",
     "Never refer to the learner as 'the student' in explanation, voiceSummary, or nextStep.",
     "Do not mention rubrics, hidden evaluation, or internal scoring.",
     "",
@@ -130,7 +133,7 @@ async function generateFeedback({ studentName, subject, problem, item, response,
 
   const content = data?.choices?.[0]?.message?.content;
   const parsed = content ? JSON.parse(content) : {};
-  const fallback = buildFallbackFeedback({ item, response, analysis, subject });
+  const fallback = buildFallbackFeedback({ item, response, analysis, subject, studentName });
   const verdict = parsed?.verdict === "pass" ? "pass" : "retry";
 
   return {
