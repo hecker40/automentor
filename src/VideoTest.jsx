@@ -294,6 +294,25 @@ function normalizeStoredAssignment(assignment) {
     Object.entries(assignment?.grades || {}).filter(([, value]) => value === "pass" || value === "retry")
   );
 
+  const feedback = Object.fromEntries(
+    Object.entries(assignment?.feedback || {})
+      .filter(([key]) => items.some((item) => item.id === key))
+      .map(([key, value]) => [key, {
+        verdict: value?.verdict === "pass" ? "pass" : "retry",
+        explanation: String(value?.explanation || "").trim().slice(0, 700),
+        voiceSummary: String(value?.voiceSummary || "").trim().slice(0, 220),
+        nextStep: String(value?.nextStep || "").trim().slice(0, 220),
+        confidence: ["low", "medium", "high"].includes(value?.confidence) ? value.confidence : "medium",
+        submittedAt: value?.submittedAt || "",
+      }])
+  );
+
+  const submissionStatus = Object.fromEntries(
+    Object.entries(assignment?.submissionStatus || {})
+      .filter(([key]) => items.some((item) => item.id === key))
+      .map(([key, value]) => [key, value === "submitting" ? "submitting" : value === "submitted" ? "submitted" : "idle"])
+  );
+
   return {
     id: assignment?.id || `assignment-${Date.now()}`,
     title: String(assignment?.title || "Suggested review").trim().slice(0, 120),
@@ -306,6 +325,8 @@ function normalizeStoredAssignment(assignment) {
     items,
     responses,
     grades,
+    feedback,
+    submissionStatus,
   };
 }
 
@@ -1237,6 +1258,46 @@ function buildSuggestedQuestions({ analysis, studentStats, subject, problem }) {
   return deduped.slice(0, 5);
 }
 
+function buildDemoStrategyCandidates({ analysis, subject, studentName, problem }) {
+  const safeSubject = normalizeLabel(subject, "this topic");
+  const safeStudent = normalizeLabel(studentName, "Student");
+  const skillBreakdown = Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
+    ? analysis.skillBreakdown.slice(0, 3)
+    : buildSkillBreakdown({ analysis, problem, subject: safeSubject });
+  const targetedPractice = Array.isArray(analysis?.targetedPractice) && analysis.targetedPractice.length
+    ? analysis.targetedPractice.slice(0, 3)
+    : buildTargetedPractice({
+        analysis: { ...analysis, skillBreakdown },
+        problem,
+        subject: safeSubject,
+        studentName: safeStudent,
+      });
+  const topSkill = skillBreakdown[0]?.skill || analysis?.misconception || safeSubject;
+  const firstPathStep = Array.isArray(analysis?.learningPath) && analysis.learningPath.length
+    ? analysis.learningPath[0]
+    : `slow down the ${String(topSkill).toLowerCase()} step`;
+  const quickPrompt = targetedPractice[0]?.prompt || analysis?.suggestedQuestion || `Explain how you would handle ${String(topSkill).toLowerCase()}.`;
+  const exercisePrompt = targetedPractice[1]?.prompt || problem || `Try one more ${safeSubject.toLowerCase()} example.`;
+
+  return [
+    {
+      id: "quick-check",
+      label: "quick check",
+      chatText: `I want to test a quick-check strategy first. ${quickPrompt}`,
+    },
+    {
+      id: "worked-example",
+      label: "worked example",
+      chatText: `I want to try a worked-example strategy. We will ${firstPathStep.charAt(0).toLowerCase()}${firstPathStep.slice(1)} one step at a time.`,
+    },
+    {
+      id: "transfer-practice",
+      label: "transfer practice",
+      chatText: `I want to test a transfer strategy next. Apply the same idea here: ${exercisePrompt}`,
+    },
+  ].filter((item) => String(item.chatText || "").trim());
+}
+
 function getReviewGradeTone(grade) {
   if (grade === "pass") {
     return {
@@ -1273,6 +1334,20 @@ function useSharedTutorReview() {
     sentSyncIdsRef.current.add(syncId);
     setAssignment(nextAssignment);
     call.sendCustomEvent({ type: "tutor-review-sync", syncId, assignment: nextAssignment }).catch(() => {});
+  };
+
+  const patchAssignment = (updater) => {
+    setAssignment((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...updater(prev),
+        updatedAt: Date.now(),
+      };
+      const syncId = `review-sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      sentSyncIdsRef.current.add(syncId);
+      call.sendCustomEvent({ type: "tutor-review-sync", syncId, assignment: next }).catch(() => {});
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -1314,53 +1389,78 @@ function useSharedTutorReview() {
   const assignSuggestedReview = (nextAssignment) => {
     syncAssignment({
       ...nextAssignment,
+      feedback: nextAssignment?.feedback || {},
+      submissionStatus: nextAssignment?.submissionStatus || {},
       updatedAt: Date.now(),
     });
   };
 
   const updateResponse = (itemId, text) => {
-    setAssignment((prev) => {
-      if (!prev) return prev;
-      const next = {
+    patchAssignment((prev) => {
+      const nextGrades = { ...(prev.grades || {}) };
+      const nextFeedback = { ...(prev.feedback || {}) };
+      const nextSubmissionStatus = { ...(prev.submissionStatus || {}) };
+
+      delete nextGrades[itemId];
+      delete nextFeedback[itemId];
+      nextSubmissionStatus[itemId] = "idle";
+
+      return {
         ...prev,
         responses: {
           ...(prev.responses || {}),
           [itemId]: text,
         },
-        updatedAt: Date.now(),
-      };
-      const syncId = `review-sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      sentSyncIdsRef.current.add(syncId);
-      call.sendCustomEvent({ type: "tutor-review-sync", syncId, assignment: next }).catch(() => {});
-      return next;
-    });
-  };
-
-  const gradeResponse = (itemId, grade) => {
-    setAssignment((prev) => {
-      if (!prev) return prev;
-      const currentGrade = prev.grades?.[itemId] || null;
-      const nextGrades = { ...(prev.grades || {}) };
-
-      if (currentGrade === grade) {
-        delete nextGrades[itemId];
-      } else {
-        nextGrades[itemId] = grade;
-      }
-
-      const next = {
-        ...prev,
         grades: nextGrades,
-        updatedAt: Date.now(),
+        feedback: nextFeedback,
+        submissionStatus: nextSubmissionStatus,
       };
-      const syncId = `review-sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      sentSyncIdsRef.current.add(syncId);
-      call.sendCustomEvent({ type: "tutor-review-sync", syncId, assignment: next }).catch(() => {});
-      return next;
     });
   };
 
-  return { assignment, lastRemoteSyncAt, assignSuggestedReview, updateResponse, gradeResponse };
+  const setSubmissionStatus = (itemId, status) => {
+    patchAssignment((prev) => ({
+      ...prev,
+      submissionStatus: {
+        ...(prev.submissionStatus || {}),
+        [itemId]: status,
+      },
+    }));
+  };
+
+  const saveReviewedResponse = (itemId, result) => {
+    patchAssignment((prev) => ({
+      ...prev,
+      grades: {
+        ...(prev.grades || {}),
+        [itemId]: result?.verdict === "pass" ? "pass" : "retry",
+      },
+      feedback: {
+        ...(prev.feedback || {}),
+        [itemId]: {
+          verdict: result?.verdict === "pass" ? "pass" : "retry",
+          explanation: String(result?.explanation || "").trim(),
+          voiceSummary: String(result?.voiceSummary || "").trim(),
+          nextStep: String(result?.nextStep || "").trim(),
+          confidence: result?.confidence === "high" || result?.confidence === "low" ? result.confidence : "medium",
+          submittedAt: new Date().toISOString(),
+        },
+      },
+      submissionStatus: {
+        ...(prev.submissionStatus || {}),
+        [itemId]: "submitted",
+      },
+    }));
+  };
+
+  return {
+    assignment,
+    lastRemoteSyncAt,
+    assignSuggestedReview,
+    updateResponse,
+    setSubmissionStatus,
+    saveReviewedResponse,
+  };
 }
 
 function useStudentProfileAnalytics(studentName) {
@@ -1844,9 +1944,10 @@ function MentorAIDemoInner() {
   const [aiTutorReply, setAiTutorReply] = useState(null);
   const [aiTutorSpeaking, setAiTutorSpeaking] = useState(false);
   const audioRef = useRef(null);
+  const pendingQuizAssignmentRef = useRef(null);
   const { analysis, analysisStatus, analysisError, broadcastLoading, broadcastSuccess, broadcastError } =
     useSharedAnalysis();
-  const { assignment, assignSuggestedReview, updateResponse, gradeResponse } = useSharedTutorReview();
+  const { assignment, assignSuggestedReview, updateResponse, setSubmissionStatus, saveReviewedResponse } = useSharedTutorReview();
   const studentName = String(sessionMeta.studentName || "");
   const subject = String(sessionMeta.subject || "");
   const displayStudentName = normalizeLabel(studentName, "Student");
@@ -1978,16 +2079,79 @@ function MentorAIDemoInner() {
     return () => window.clearTimeout(timeout);
   }, [displayStudentName, displaySubject, problem, messages, assignment, syncSessionContext]);
 
-  const handleAskAiTutor = async ({ studentMessage = "" } = {}) => {
-    setAiTutorStatus("loading");
-    setAiTutorError("");
-    setMentorTab("recs");
+  const requestTutorSpeech = useCallback(
+    async (payload) => {
+      setAiTutorStatus("loading");
+      setAiTutorError("");
 
-    try {
       const response = await fetch("/api/ai-tutor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(payload),
+      });
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(body?.error || "AI tutor response failed");
+      }
+
+      setAiTutorReply(body);
+      setAiTutorStatus("ready");
+      setAiTutorError(body?.warning || "");
+
+      if (body?.audioBase64) {
+        try {
+          await playAiAudio(body.audioBase64, body.audioMimeType);
+        } catch {
+          setAiTutorError("The AI tutor wrote a response, but the browser blocked autoplay. Tap again to play it.");
+        }
+      }
+
+      return body;
+    },
+    [playAiAudio]
+  );
+
+  const speakDirectTutorText = async (text, options = {}) => {
+    if (!String(text || "").trim()) return null;
+
+    const payload = await requestTutorSpeech({
+      studentName: displayStudentName,
+      subject: displaySubject,
+      problem,
+      directText: text,
+      teachingFocus: options.teachingFocus || "demo-strategy",
+    });
+
+    if (options.postToChat) {
+      sendChatMessage(options.chatText || payload?.text || text, { from: "tutor" });
+    }
+
+    return payload;
+  };
+
+  const announceQuizAssignment = async (nextAssignment) => {
+    if (!nextAssignment) return;
+
+    pendingQuizAssignmentRef.current = null;
+    assignSuggestedReview(nextAssignment);
+    setMentorTab("recs");
+
+    await speakDirectTutorText(
+      "I assigned a quiz. Answer each prompt in the tutor panel, then press submit when you are done writing each answer.",
+      {
+        postToChat: true,
+        teachingFocus: "quiz-assigned",
+      }
+    );
+  };
+
+  const handleAskAiTutor = async ({ studentMessage = "" } = {}) => {
+    setMentorTab("recs");
+
+    try {
+      const payload = await requestTutorSpeech({
           studentName: displayStudentName,
           subject: displaySubject,
           problem,
@@ -1999,29 +2163,10 @@ function MentorAIDemoInner() {
           effectivePracticeModes: effectivePracticeModes.slice(0, 3),
           targetedPractice: (latestTargetedPractice.length ? latestTargetedPractice : currentTargetedPractice).slice(0, 3),
           strengths: (effectiveProfile.strengths || studentStats.topStrengths.map((item) => item.label)).slice(0, 3),
-        }),
       });
-
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.error || "AI tutor response failed");
-      }
-
-      setAiTutorReply(payload);
-      setAiTutorStatus("ready");
-      setAiTutorError(payload?.warning || "");
 
       if (payload?.text) {
         sendChatMessage(payload.text, { from: "tutor" });
-      }
-
-      if (payload?.audioBase64) {
-        try {
-          await playAiAudio(payload.audioBase64, payload.audioMimeType);
-        } catch {
-          setAiTutorError("The AI tutor wrote a response, but the browser blocked autoplay. Tap the button again to play it.");
-        }
       }
     } catch (error) {
       setAiTutorStatus("error");
@@ -2038,14 +2183,70 @@ function MentorAIDemoInner() {
   const handleAssignSuggestedReview = () => {
     if (!assignmentSourceAnalysis) return;
 
-    assignSuggestedReview(
-      buildSuggestedReviewAssignment({
+    const nextAssignment = buildSuggestedReviewAssignment({
         analysis: assignmentSourceAnalysis,
         subject: displaySubject,
         studentName: displayStudentName,
         problem: assignmentSourceProblem,
-      })
-    );
+      });
+
+    announceQuizAssignment(nextAssignment).catch((error) => {
+      setAiTutorStatus("error");
+      setAiTutorError(error instanceof Error ? error.message : "Quiz assignment failed");
+    });
+  };
+
+  const handleSubmitReviewAnswer = async (item) => {
+    const responseText = String(assignment?.responses?.[item.id] || "").trim();
+
+    if (!responseText) {
+      saveReviewedResponse(item.id, {
+        verdict: "retry",
+        explanation: "Write an answer before submitting so MentorAI can check the reasoning.",
+        voiceSummary: "Write your answer first, then submit it so I can check it.",
+        nextStep: "Add your reasoning, then submit again.",
+        confidence: "low",
+      });
+      return;
+    }
+
+    setSubmissionStatus(item.id, "submitting");
+
+    try {
+      const response = await fetch("/api/quiz-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentName: displayStudentName,
+          subject: displaySubject,
+          problem: assignmentSourceProblem || problem,
+          item,
+          response: responseText,
+          analysis: assignmentSourceAnalysis,
+          learningPath: assignment?.learningPath || assignmentSourceAnalysis?.learningPath || [],
+          chatHistory: messages,
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "Quiz feedback failed");
+      }
+
+      saveReviewedResponse(item.id, payload);
+
+      if (payload?.voiceSummary) {
+        await speakDirectTutorText(payload.voiceSummary, {
+          postToChat: false,
+          teachingFocus: payload?.verdict === "pass" ? "quiz-pass" : "quiz-retry",
+        });
+      }
+    } catch (error) {
+      setSubmissionStatus(item.id, "idle");
+      setAiTutorStatus("error");
+      setAiTutorError(error instanceof Error ? error.message : "Quiz feedback failed");
+    }
   };
 
   const handleAnalyze = async () => {
@@ -2082,6 +2283,29 @@ function MentorAIDemoInner() {
         messages,
         assignment,
       });
+
+      const strategyOptions = buildDemoStrategyCandidates({
+        analysis: payload,
+        subject: displaySubject,
+        studentName: displayStudentName,
+        problem,
+      });
+      const nextAssignment = buildSuggestedReviewAssignment({
+        analysis: payload,
+        subject: displaySubject,
+        studentName: displayStudentName,
+        problem,
+      });
+
+      pendingQuizAssignmentRef.current = nextAssignment;
+
+      if (strategyOptions.length) {
+        const selectedStrategy = strategyOptions[studentStats.totalAnalyses % strategyOptions.length];
+        await speakDirectTutorText(selectedStrategy.chatText, {
+          postToChat: true,
+          teachingFocus: selectedStrategy.label,
+        });
+      }
     } catch (error) {
       broadcastError(error instanceof Error ? error.message : "MentorAI analysis failed");
     }
@@ -2101,6 +2325,12 @@ function MentorAIDemoInner() {
 
     sendChatMessage(nextMessage, { from: "student" });
     setChatInput("");
+
+    if (pendingQuizAssignmentRef.current) {
+      await announceQuizAssignment(pendingQuizAssignmentRef.current);
+      return;
+    }
+
     await handleAskAiTutor({ studentMessage: nextMessage });
   };
 
@@ -3076,36 +3306,55 @@ function MentorAIDemoInner() {
                               }}
                             />
 
-                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                            <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
                               <button
-                                onClick={() => gradeResponse(item.id, "pass")}
+                                onClick={() => handleSubmitReviewAnswer(item)}
+                                disabled={!String(assignment.responses?.[item.id] || "").trim() || assignment.submissionStatus?.[item.id] === "submitting"}
                                 style={{
-                                  border: `1px solid ${assignment.grades?.[item.id] === "pass" ? theme.greenLight : theme.border}`,
-                                  background: assignment.grades?.[item.id] === "pass" ? theme.greenSoft : "#fff",
-                                  color: theme.green,
+                                  border: "none",
+                                  background: theme.navy,
+                                  color: "#fff",
                                   borderRadius: 8,
-                                  padding: "7px 10px",
+                                  padding: "8px 12px",
                                   fontSize: 12,
                                   fontWeight: 600,
+                                  cursor: !String(assignment.responses?.[item.id] || "").trim() || assignment.submissionStatus?.[item.id] === "submitting" ? "not-allowed" : "pointer",
+                                  opacity: !String(assignment.responses?.[item.id] || "").trim() || assignment.submissionStatus?.[item.id] === "submitting" ? 0.6 : 1,
                                 }}
                               >
-                                ✓ Mark pass
+                                {assignment.submissionStatus?.[item.id] === "submitting" ? "Analyzing..." : "Submit answer"}
                               </button>
-                              <button
-                                onClick={() => gradeResponse(item.id, "retry")}
-                                style={{
-                                  border: `1px solid ${assignment.grades?.[item.id] === "retry" ? theme.red : theme.border}`,
-                                  background: assignment.grades?.[item.id] === "retry" ? theme.redSoft : "#fff",
-                                  color: theme.red,
-                                  borderRadius: 8,
-                                  padding: "7px 10px",
-                                  fontSize: 12,
-                                  fontWeight: 600,
-                                }}
-                              >
-                                ✕ Mark retry
-                              </button>
+
+                              {assignment.feedback?.[item.id]?.submittedAt && (
+                                <div style={{ fontSize: 11, color: theme.textMuted }}>
+                                  Checked {new Date(assignment.feedback[item.id].submittedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                                </div>
+                              )}
                             </div>
+
+                            {assignment.feedback?.[item.id] && (
+                              <div
+                                style={{
+                                  marginTop: 10,
+                                  background: assignment.feedback[item.id].verdict === "pass" ? theme.greenSoft : theme.redSoft,
+                                  border: `1px solid ${assignment.feedback[item.id].verdict === "pass" ? theme.greenLight : theme.red}`,
+                                  borderRadius: 8,
+                                  padding: "10px 12px",
+                                }}
+                              >
+                                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: assignment.feedback[item.id].verdict === "pass" ? theme.green : theme.red }}>
+                                  {assignment.feedback[item.id].verdict === "pass" ? "Answer looks good" : "Why this needs another try"}
+                                </div>
+                                <div style={{ fontSize: 12, lineHeight: 1.6, marginBottom: assignment.feedback[item.id].nextStep ? 8 : 0 }}>
+                                  {assignment.feedback[item.id].explanation}
+                                </div>
+                                {assignment.feedback[item.id].nextStep && (
+                                  <div style={{ fontSize: 11, color: theme.textMuted, lineHeight: 1.5 }}>
+                                    Next step: {assignment.feedback[item.id].nextStep}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>

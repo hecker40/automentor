@@ -380,22 +380,29 @@ export default async function handler(req, res) {
   const effectivePracticeModes = compactList(body?.effectivePracticeModes || [], 3);
   const targetedPractice = compactList(body?.targetedPractice || [], 3);
   const strengths = compactList(body?.strengths || [], 3);
+  const directText = cleanText(body?.directText);
   const voiceId = cleanText(body?.voiceId || process.env.ELEVENLABS_VOICE_ID);
 
   try {
-    const tutor = await generateTutorText({
-      studentName,
-      subject,
-      problem,
-      studentMessage,
-      chatHistory,
-      analysis,
-      latestLessonRecap,
-      focusSkills,
-      effectivePracticeModes,
-      targetedPractice,
-      strengths,
-    });
+    const tutor = directText
+      ? {
+          text: directText,
+          teachingFocus: cleanText(body?.teachingFocus, "direct-speech"),
+          source: "direct",
+        }
+      : await generateTutorText({
+          studentName,
+          subject,
+          problem,
+          studentMessage,
+          chatHistory,
+          analysis,
+          latestLessonRecap,
+          focusSkills,
+          effectivePracticeModes,
+          targetedPractice,
+          strengths,
+        });
 
     const speech = await synthesizeSpeech(tutor.text, voiceId);
 
