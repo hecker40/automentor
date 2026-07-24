@@ -2705,21 +2705,6 @@ function MentorAIDemoInner() {
                   />
                 </div>
 
-                <div
-                  style={{
-                    marginBottom: 14,
-                    background: "#F7F6F1",
-                    border: `1px solid ${theme.border}`,
-                    borderRadius: 8,
-                    padding: 12,
-                    fontSize: 12,
-                    color: theme.textMuted,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  MentorAI updates its long-term student model when you save a new analysis checkpoint. Live typing, chat, and whiteboard edits do not refresh the profile on their own.
-                </div>
-
                 {studentStats.totalAnalyses === 0 ? (
                   <EmptyStateCard text="Run “Analyze my work” to start building persistent insights for this student." />
                 ) : (
