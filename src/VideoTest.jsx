@@ -1784,7 +1784,6 @@ function MentorAIDemoInner() {
   const whiteboard = useWhiteboard();
   const [lastSnapshotInfo, setLastSnapshotInfo] = useState(null);
   const [aiTutorStatus, setAiTutorStatus] = useState("idle");
-  const [aiTutorError, setAiTutorError] = useState("");
   const [aiTutorReply, setAiTutorReply] = useState(null);
   const [aiTutorSpeaking, setAiTutorSpeaking] = useState(false);
   const audioRef = useRef(null);
@@ -1919,7 +1918,6 @@ function MentorAIDemoInner() {
   const requestTutorSpeech = useCallback(
     async (payload) => {
       setAiTutorStatus("loading");
-      setAiTutorError("");
 
       const response = await fetch("/api/ai-tutor", {
         method: "POST",
@@ -1935,13 +1933,12 @@ function MentorAIDemoInner() {
 
       setAiTutorReply(body);
       setAiTutorStatus("ready");
-      setAiTutorError(body?.warning || "");
 
       if (body?.audioBase64) {
         try {
           await playAiAudio(body.audioBase64, body.audioMimeType);
         } catch {
-          setAiTutorError("The AI tutor wrote a response, but the browser blocked autoplay. Tap again to play it.");
+          // ignore autoplay block in the compact voice card UI
         }
       }
 
@@ -2005,9 +2002,8 @@ function MentorAIDemoInner() {
       if (payload?.text) {
         sendChatMessage(payload.text, { from: "tutor" });
       }
-    } catch (error) {
+    } catch {
       setAiTutorStatus("error");
-      setAiTutorError(error instanceof Error ? error.message : "AI tutor response failed");
     }
   };
 
@@ -2057,9 +2053,8 @@ function MentorAIDemoInner() {
         problem: assignmentSourceProblem,
       });
 
-    announceQuizAssignment(nextAssignment).catch((error) => {
+    announceQuizAssignment(nextAssignment).catch(() => {
       setAiTutorStatus("error");
-      setAiTutorError(error instanceof Error ? error.message : "Quiz assignment failed");
     });
   };
 
@@ -2109,10 +2104,9 @@ function MentorAIDemoInner() {
           teachingFocus: payload?.verdict === "pass" ? "quiz-pass" : "quiz-retry",
         });
       }
-    } catch (error) {
+    } catch {
       setSubmissionStatus(item.id, "idle");
       setAiTutorStatus("error");
-      setAiTutorError(error instanceof Error ? error.message : "Quiz feedback failed");
     }
   };
 
@@ -2487,12 +2481,6 @@ function MentorAIDemoInner() {
                 <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 1.55 }}>
                   {aiTutorReply?.text || "Ask a question in chat or tap the button to have the AI tutor explain the next step out loud."}
                 </div>
-
-                {aiTutorError && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: theme.red }}>
-                    {aiTutorError}
-                  </div>
-                )}
               </div>
 
               <div
