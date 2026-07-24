@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useId, useCallback } from "react";
 import {
   Pencil, Eraser, Undo2, Redo2, Download,
   Trash2, Sparkles, Send, AlertTriangle, CheckCircle2,
-  ChevronRight, ChevronDown, MessageSquare, User, Monitor, PenLine,
+  ChevronRight, MessageSquare, User, Monitor, PenLine,
 } from "lucide-react";
 import {
   CallingState,
@@ -1101,163 +1101,6 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
   };
 }
 
-function cleanQuestionText(value, fallback) {
-  const text = String(value || "").trim();
-  if (!text) return fallback;
-  return text.endsWith("?") ? text : `${text}?`;
-}
-
-function formatNumericToken(value, fallback) {
-  if (!Number.isFinite(value)) return fallback;
-  const rounded = Math.abs(value) < 1 ? Number(value.toFixed(2)) : Number(value.toFixed(0));
-  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.0+$/, "");
-}
-
-function mutateProblemText(problem, transform) {
-  const matches = [...String(problem || "").matchAll(/-?\d*\.?\d+/g)];
-  if (!matches.length) return String(problem || "").trim();
-
-  return matches.reduce((nextText, match, index) => {
-    const token = match[0];
-    const originalValue = Number(token);
-    const nextValue = transform(originalValue, index, matches.length);
-    if (!Number.isFinite(nextValue) || nextValue === originalValue) return nextText;
-
-    const replacement = formatNumericToken(nextValue, token);
-    const before = nextText.slice(0, match.index);
-    const after = nextText.slice(match.index + token.length);
-    const delta = replacement.length - token.length;
-
-    matches.slice(index + 1).forEach((futureMatch) => {
-      futureMatch.index += delta;
-    });
-
-    return `${before}${replacement}${after}`;
-  }, String(problem || "").trim());
-}
-
-function flipSimpleOperator(problem) {
-  const text = String(problem || "").trim();
-  if (/\+\s*\d/.test(text)) {
-    return text.replace(/\+\s*(\d+)/, (_, value) => `- ${Number(value) + 1}`);
-  }
-
-  if (/-\s*\d/.test(text)) {
-    return text.replace(/-\s*(\d+)/, (_, value) => `+ ${Number(value) + 1}`);
-  }
-
-  return text;
-}
-
-function buildSuggestedQuestions({ analysis, studentStats, subject, problem }) {
-  const safeSubject = normalizeLabel(subject, "this topic");
-  const previousPrompts = studentStats.observations
-    .map((entry) => String(entry?.problem || "").trim())
-    .filter(Boolean)
-    .slice(-6);
-  const baseProblem = String(problem || previousPrompts[previousPrompts.length - 1] || "").trim();
-  const skillBreakdown = Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
-    ? analysis.skillBreakdown.slice(0, 3)
-    : buildSkillBreakdown({ analysis, problem: baseProblem, subject: safeSubject });
-  const targetedPractice = Array.isArray(analysis?.targetedPractice) && analysis.targetedPractice.length
-    ? analysis.targetedPractice.slice(0, 3)
-    : buildTargetedPractice({ analysis: { ...analysis, skillBreakdown }, problem: baseProblem, subject: safeSubject });
-  const topSkill = skillBreakdown[0]?.skill || analysis?.misconception || safeSubject;
-  const misconception = String(analysis?.misconception || topSkill).trim();
-
-  const conceptualSuggestions = [
-    analysis?.suggestedQuestion
-      ? {
-          prompt: cleanQuestionText(
-            analysis.suggestedQuestion,
-            `What should you check first when doing ${topSkill.toLowerCase()}?`
-          ),
-          note: `Focuses on ${topSkill.toLowerCase()}`,
-        }
-      : null,
-    ...targetedPractice.map((item, index) => ({
-      prompt: item.prompt,
-      note: item.reason || `Personalized ${index === 0 ? "check" : "practice"}`,
-    })),
-    {
-      prompt: cleanQuestionText(
-        `Explain why the ${topSkill.toLowerCase()} step works before you simplify anything else`,
-        `Explain why the ${topSkill.toLowerCase()} step works`
-      ),
-      note: `Checks whether ${misconception.toLowerCase()} is clearing up`,
-    },
-  ].filter((item) => String(item?.prompt || "").trim());
-
-  if (!baseProblem) {
-    return conceptualSuggestions.slice(0, 5).map((item, index) => ({
-      ...item,
-      id: `suggested-question-concept-${index}`,
-    }));
-  }
-
-  const baseProblemNormalized = baseProblem.replace(/\s+/g, " ");
-  const subjectLower = safeSubject.toLowerCase();
-
-  const suggestionPool = [
-    ...conceptualSuggestions,
-    {
-      prompt: mutateProblemText(baseProblemNormalized, (value, index) => (index === 0 ? value + 1 : value)),
-      note: `Close ${topSkill.toLowerCase()} review`,
-    },
-    {
-      prompt: mutateProblemText(baseProblemNormalized, (value, index) => (index <= 1 ? value + 1 : value + 2)),
-      note: `Same ${topSkill.toLowerCase()} pattern`,
-    },
-    {
-      prompt: mutateProblemText(baseProblemNormalized, (value, index, total) =>
-        index === total - 1 ? value + 3 : index === 0 ? value + 2 : value
-      ),
-      note: "Fresh numbers",
-    },
-    {
-      prompt: flipSimpleOperator(
-        mutateProblemText(baseProblemNormalized, (value, index) => (index === 1 ? value + 2 : value))
-      ),
-      note: `Helps ${subjectLower}`,
-    },
-    {
-      prompt: mutateProblemText(baseProblemNormalized, (value, index) => {
-        if (index === 0) return value + 2;
-        if (index === 1) return value + 3;
-        return value + 4;
-      }),
-      note: `${topSkill} reinforcement`,
-    },
-  ];
-
-  const deduped = [];
-  const seen = new Set();
-
-  suggestionPool.forEach((item, index) => {
-    const prompt = String(item.prompt || "").trim();
-    if (!prompt) return;
-    const key = prompt.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    deduped.push({ ...item, prompt, id: `suggested-question-${index}` });
-  });
-
-  if (deduped.length < 4) {
-    previousPrompts
-      .slice()
-      .reverse()
-      .forEach((previousPrompt) => {
-        if (deduped.length >= 5) return;
-        const prompt = String(previousPrompt || "").trim();
-        if (!prompt || seen.has(prompt.toLowerCase())) return;
-        seen.add(prompt.toLowerCase());
-        deduped.push({ id: `suggested-question-history-${deduped.length}`, prompt, note: "Recent review" });
-      });
-  }
-
-  return deduped.slice(0, 5);
-}
-
 function buildDemoStrategyCandidates({ analysis, subject, studentName, problem }) {
   const safeSubject = normalizeLabel(subject, "this topic");
   const safeStudent = normalizeLabel(studentName, "Student");
@@ -1933,7 +1776,8 @@ function MentorAIDemoInner() {
   const [centerTab, setCenterTab] = useState("whiteboard");
   const [mentorTab, setMentorTab] = useState("insights");
   const [chatInput, setChatInput] = useState("");
-  const [questionMenuOpen, setQuestionMenuOpen] = useState(false);
+  const [problemGeneratorStatus, setProblemGeneratorStatus] = useState("idle");
+  const [problemGeneratorError, setProblemGeneratorError] = useState("");
   const [sessionMeta, updateSessionMeta] = useSharedSessionMeta({ studentName: "", subject: "", updatedAt: 0 });
   const [problem, setProblem] = useSharedProblem("");
   const [messages, sendChatMessage] = useSharedChat();
@@ -2027,13 +1871,6 @@ function MentorAIDemoInner() {
     currentAnalysisSkillBreakdown[0]?.skill ||
     studentStats.topMisconceptions[0]?.label ||
     displaySubject;
-  const suggestedQuestions = buildSuggestedQuestions({
-    analysis: assignmentSourceAnalysis,
-    studentStats,
-    subject: displaySubject,
-    problem: assignmentSourceProblem,
-  });
-  const hasQuestionSuggestions = Boolean(assignmentSourceAnalysis && suggestedQuestions.length);
 
   const stopAiAudio = useCallback(() => {
     const currentAudio = audioRef.current;
@@ -2174,10 +2011,40 @@ function MentorAIDemoInner() {
     }
   };
 
-  const handleUseSuggestedQuestion = (nextQuestion) => {
-    setProblem(nextQuestion);
-    recordSuggestedPrompt({ studentName: displayStudentName, subject: displaySubject, prompt: nextQuestion });
-    setQuestionMenuOpen(false);
+  const handleGenerateSubjectProblem = async () => {
+    const liveSubject = String(subject || "").trim();
+    if (!liveSubject) return;
+
+    setProblemGeneratorStatus("loading");
+    setProblemGeneratorError("");
+
+    try {
+      const response = await fetch("/api/generate-problem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: liveSubject,
+          studentName: displayStudentName,
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "Problem generation failed");
+      }
+
+      setProblem(payload.problem || "");
+      recordSuggestedPrompt({
+        studentName: displayStudentName,
+        subject: displaySubject,
+        prompt: payload.problem || "",
+      });
+      setProblemGeneratorStatus("success");
+    } catch (error) {
+      setProblemGeneratorStatus("error");
+      setProblemGeneratorError(error instanceof Error ? error.message : "Problem generation failed");
+    }
   };
 
   const handleAssignSuggestedReview = () => {
@@ -2498,7 +2365,12 @@ function MentorAIDemoInner() {
                   <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Subject</div>
                   <input
                     value={subject}
-                    onChange={(e) => updateSessionMeta({ subject: e.target.value })}
+                    onChange={(e) => {
+                      updateSessionMeta({ subject: e.target.value });
+                      setProblem("");
+                      setProblemGeneratorError("");
+                      setProblemGeneratorStatus("idle");
+                    }}
                     placeholder="Subject"
                     style={{
                       width: "100%",
@@ -2518,14 +2390,14 @@ function MentorAIDemoInner() {
               <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
                 Problem
                 <span style={{ color: theme.purple, fontWeight: 500, fontSize: 11 }}>
-                  &middot; shared live with the AI tutor
+                  &middot; generated live from the subject
                 </span>
               </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 16 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
                 <input
                   value={problem}
-                  onChange={(e) => setProblem(e.target.value)}
-                  placeholder="Enter the problem for this session"
+                  readOnly
+                  placeholder="Choose a subject, then tap Suggested question"
                   style={{
                     flex: 1,
                     fontFamily: fontMono,
@@ -2537,76 +2409,44 @@ function MentorAIDemoInner() {
                     width: "100%",
                     boxSizing: "border-box",
                     outline: "none",
+                    color: problem ? theme.text : theme.textMuted,
                   }}
                 />
 
-                <div style={{ position: "relative", flexShrink: 0 }}>
-                  <button
-                    onClick={() => setQuestionMenuOpen((open) => !open)}
-                    disabled={!hasQuestionSuggestions}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      border: `1px solid ${theme.border}`,
-                      background: "#fff",
-                      color: theme.text,
-                      borderRadius: 8,
-                      padding: "10px 12px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: hasQuestionSuggestions ? "pointer" : "not-allowed",
-                      opacity: hasQuestionSuggestions ? 1 : 0.6,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Suggested question
-                    <ChevronDown size={14} />
-                  </button>
-
-                  {questionMenuOpen && hasQuestionSuggestions && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: "calc(100% + 8px)",
-                        right: 0,
-                        width: 320,
-                        maxWidth: "calc(100vw - 48px)",
-                        background: "#fff",
-                        border: `1px solid ${theme.border}`,
-                        borderRadius: 10,
-                        boxShadow: "0 16px 40px rgba(22, 27, 46, 0.12)",
-                        padding: 8,
-                        zIndex: 4,
-                      }}
-                    >
-                      <div style={{ fontSize: 11, color: theme.textMuted, padding: "4px 8px 8px" }}>
-                        Built from the latest guided path and previous prompts.
-                      </div>
-                      {suggestedQuestions.map((item) => (
-                        <button
-                          key={item.id}
-                          onClick={() => handleUseSuggestedQuestion(item.prompt)}
-                          style={{
-                            width: "100%",
-                            textAlign: "left",
-                            border: "none",
-                            background: "transparent",
-                            borderRadius: 8,
-                            padding: "10px 10px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          <div style={{ fontSize: 13, color: theme.text, lineHeight: 1.45, marginBottom: 4 }}>
-                            {item.prompt}
-                          </div>
-                          <div style={{ fontSize: 11, color: theme.textMuted }}>{item.note}</div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <button
+                  onClick={handleGenerateSubjectProblem}
+                  disabled={!String(subject || "").trim() || problemGeneratorStatus === "loading"}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    border: `1px solid #DDD7F9`,
+                    background: theme.purpleSoft,
+                    color: "#4A3FA3",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: !String(subject || "").trim() || problemGeneratorStatus === "loading" ? "not-allowed" : "pointer",
+                    opacity: !String(subject || "").trim() || problemGeneratorStatus === "loading" ? 0.6 : 1,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {problemGeneratorStatus === "loading" ? "Generating..." : "Suggested question"}
+                </button>
               </div>
+
+              {problemGeneratorError && (
+                <div style={{ fontSize: 12, color: theme.red, marginBottom: 16 }}>
+                  {problemGeneratorError}
+                </div>
+              )}
+
+              {!problemGeneratorError && (
+                <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 16 }}>
+                  The problem is generated from the live subject, then shared with the AI tutor for analysis.
+                </div>
+              )}
 
               <div
                 style={{

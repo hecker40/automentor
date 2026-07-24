@@ -147,11 +147,19 @@ export function inferFocusSkills({ subject = "", problem = "", analysis = {} } =
   const suggestedQuestion = String(analysis?.suggestedQuestion || "");
   const strengths = Array.isArray(analysis?.strengths) ? analysis.strengths.join(" ") : "";
   const learningPath = Array.isArray(analysis?.learningPath) ? analysis.learningPath.join(" ") : "";
+  const observedWork = String(analysis?.observedWork || "");
+  const observedSteps = Array.isArray(analysis?.observedSteps) ? analysis.observedSteps.join(" ") : "";
+  const observedOperations = Array.isArray(analysis?.observedOperations) ? analysis.observedOperations.join(" ") : "";
+  const evidenceFromBreakdown = Array.isArray(analysis?.skillBreakdown)
+    ? analysis.skillBreakdown.map((item) => `${item?.skill || ""} ${item?.evidence || ""}`).join(" ")
+    : "";
 
   const weightedSources = [
-    `${misconception} ${explanation}`,
-    `${problem} ${suggestedQuestion}`,
-    `${subject} ${learningPath} ${strengths}`,
+    `${observedWork} ${observedSteps} ${observedOperations} ${evidenceFromBreakdown}`,
+    `${misconception} ${explanation} ${suggestedQuestion}`,
+    `${learningPath} ${strengths}`,
+    String(problem || ""),
+    String(subject || ""),
   ];
 
   const matches = SKILL_CATALOG.map((entry) => {
