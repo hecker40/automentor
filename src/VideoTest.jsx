@@ -223,14 +223,41 @@ function loadProfileStore() {
   return safeJsonParse(window.localStorage.getItem(PROFILE_STORAGE_KEY), {});
 }
 
-function loadCachedProfile(studentKey) {
-  return loadProfileStore()?.[studentKey] || null;
+function loadCachedProfileRecord(studentKey) {
+  const raw = loadProfileStore()?.[studentKey] || null;
+  if (!raw) return null;
+
+  if (raw.profile && typeof raw.profile === "object") {
+    return {
+      profile: raw.profile,
+      analysisFingerprint: String(raw.analysisFingerprint || ""),
+      savedAt: raw.savedAt || "",
+    };
+  }
+
+  return {
+    profile: raw,
+    analysisFingerprint: "",
+    savedAt: "",
+  };
 }
 
-function saveCachedProfile(studentKey, profile) {
+function loadCachedProfile(studentKey) {
+  return loadCachedProfileRecord(studentKey)?.profile || null;
+}
+
+function loadCachedProfileFingerprint(studentKey) {
+  return loadCachedProfileRecord(studentKey)?.analysisFingerprint || "";
+}
+
+function saveCachedProfile(studentKey, profile, analysisFingerprint = "") {
   if (typeof window === "undefined") return;
   const store = loadProfileStore();
-  store[studentKey] = profile;
+  store[studentKey] = {
+    profile,
+    analysisFingerprint,
+    savedAt: new Date().toISOString(),
+  };
   window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(store));
 }
 
@@ -286,9 +313,19 @@ function getLatestAnalyzedSession(sessions = []) {
   return [...sessions].reverse().find((session) => Array.isArray(session?.analyses) && session.analyses.length) || null;
 }
 
-function buildConversationSignalsFromSessions(sessions = []) {
+function getLatestAnalyzedCheckpoint(sessions = []) {
   const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
-  const messages = normalizeStoredMessages(latestSession?.messages || []);
+  const latestEntry = latestSession?.analyses?.[latestSession.analyses.length - 1] || null;
+
+  return {
+    session: latestSession,
+    entry: latestEntry,
+  };
+}
+
+function buildConversationSignalsFromSessions(sessions = []) {
+  const { session: latestSession, entry: latestEntry } = getLatestAnalyzedCheckpoint(sessions);
+  const messages = normalizeStoredMessages(latestEntry?.messagesSnapshot || latestSession?.messages || []);
   if (!messages.length) return [];
 
   const combined = messages.map((message) => message.text.toLowerCase());
@@ -316,19 +353,19 @@ function buildConversationSignalsFromSessions(sessions = []) {
 }
 
 function buildLatestLessonRecap(studentName, sessions = [], stats) {
-  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
-  const latestAnalysis = stats?.latestObservation?.analysis || latestSession?.analyses?.[latestSession.analyses.length - 1]?.analysis;
-  const subject = normalizeLabel(latestAnalysis?.subject || latestSession?.subject || stats?.supportSubject?.subject, "the current topic");
-  const problem = String(stats?.latestObservation?.problem || latestAnalysis?.problem || latestSession?.problem || "this problem").trim() || "this problem";
+  const { session: latestSession, entry: latestEntry } = getLatestAnalyzedCheckpoint(sessions);
+  const latestAnalysis = stats?.latestObservation?.analysis || latestEntry?.analysis;
+  const subject = normalizeLabel(latestEntry?.subject || latestSession?.subject || stats?.supportSubject?.subject, "the current topic");
+  const problem = String(stats?.latestObservation?.problem || latestEntry?.problem || latestSession?.problem || "this problem").trim() || "this problem";
   const misconception = latestAnalysis?.misconception || stats?.topMisconceptions?.[0]?.label || "the current concept";
 
   return `${studentName} worked on ${subject.toLowerCase()} through ${problem}. The main tutoring focus was ${misconception.toLowerCase()}, with the session moving toward a clearer step-by-step solution.`;
 }
 
 function buildFallbackVideoBrief(studentName, sessions = [], stats) {
-  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
-  const latestAnalysis = stats?.latestObservation?.analysis || latestSession?.analyses?.[latestSession.analyses.length - 1]?.analysis;
-  const problem = String(stats?.latestObservation?.problem || latestAnalysis?.problem || latestSession?.problem || "the lesson problem").trim() || "the lesson problem";
+  const { session: latestSession, entry: latestEntry } = getLatestAnalyzedCheckpoint(sessions);
+  const latestAnalysis = stats?.latestObservation?.analysis || latestEntry?.analysis;
+  const problem = String(stats?.latestObservation?.problem || latestEntry?.problem || latestSession?.problem || "the lesson problem").trim() || "the lesson problem";
   const misconception = latestAnalysis?.misconception || stats?.topMisconceptions?.[0]?.label || "the main focus area";
   const strength = stats?.topStrengths?.[0]?.label || latestAnalysis?.strengths?.[0] || "staying engaged with the problem";
 
@@ -358,10 +395,31 @@ function buildStudentAnalytics(store, studentName) {
             sessionId: session.sessionId,
             studentName: session.studentName,
             subject: normalizeLabel(entry.subject || session.subject, "General"),
+            messagesSnapshot: normalizeStoredMessages(entry?.messagesSnapshot || session?.messages || []),
+            assignmentSnapshot: normalizeStoredAssignment(entry?.assignmentSnapshot || session?.currentAssignment || null),
           }))
         : []
     )
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  const analysisSessions = observations.map((entry, index) => {
+    const frozenAssignment = normalizeStoredAssignment(entry?.assignmentSnapshot || null);
+
+    return {
+      sessionId: `${entry.sessionId || "session"}-${entry.id || index}`,
+      studentKey,
+      studentName: normalizeLabel(entry.studentName || studentName, "Student"),
+      subject: normalizeLabel(entry.subject, "General"),
+      problem: String(entry?.problem || "").trim(),
+      startedAt: entry.createdAt,
+      updatedAt: entry.createdAt,
+      messages: normalizeStoredMessages(entry?.messagesSnapshot || []),
+      currentAssignment: frozenAssignment,
+      reviewAssignments: frozenAssignment ? [frozenAssignment] : [],
+      suggestedPrompts: [],
+      analyses: [entry],
+    };
+  });
 
   const strengthCounts = new Map();
   const misconceptionCounts = new Map();
@@ -426,6 +484,7 @@ function buildStudentAnalytics(store, studentName) {
   return {
     studentKey,
     sessions,
+    analysisSessions,
     observations,
     analysisFingerprint: observations.map((entry) => `${entry.id || "analysis"}:${entry.createdAt || ""}`).join("||"),
     totalSessions: sessions.length,
@@ -443,12 +502,13 @@ function buildStudentAnalytics(store, studentName) {
 }
 
 function buildFallbackProfile(studentName, stats) {
+  const profileSessions = stats.analysisSessions?.length ? stats.analysisSessions : stats.sessions;
   const strengths = stats.topStrengths.map((item) => item.label);
   const focusAreas = stats.topMisconceptions.map((item) => item.label);
-  const conversationSignals = buildConversationSignalsFromSessions(stats.sessions);
+  const conversationSignals = buildConversationSignalsFromSessions(profileSessions);
   const adaptiveProfile = buildAdaptiveProfile({
     studentName,
-    sessions: stats.sessions,
+    sessions: profileSessions,
     observations: stats.observations,
     subjectStats: stats.subjectStats,
     latestObservation: stats.latestObservation,
@@ -479,9 +539,9 @@ function buildFallbackProfile(studentName, stats) {
     strengths: strengths.length ? strengths : ["No recurring strengths captured yet"],
     focusAreas: focusAreas.length ? focusAreas : ["No recurring focus areas captured yet"],
     subjectProfiles,
-    latestLessonRecap: buildLatestLessonRecap(studentName, stats.sessions, stats),
+    latestLessonRecap: buildLatestLessonRecap(studentName, profileSessions, stats),
     conversationSignals,
-    reviewVideoBrief: buildFallbackVideoBrief(studentName, stats.sessions, stats),
+    reviewVideoBrief: buildFallbackVideoBrief(studentName, profileSessions, stats),
     adaptationSummary: adaptiveProfile.adaptationSummary,
     focusSkills: adaptiveProfile.focusSkills,
     effectivePracticeModes: adaptiveProfile.effectivePracticeModes,
@@ -594,31 +654,113 @@ function VideoTileLabel({ children }) {
   );
 }
 
-function LiveCallLayout() {
+function AITutorTile({ agentName, isSpeaking, status, transcript }) {
+  const statusLabel =
+    status === "loading"
+      ? "Thinking through the next move..."
+      : status === "error"
+        ? "Voice agent unavailable"
+        : isSpeaking
+          ? "Speaking through ElevenLabs"
+          : "Ready to coach";
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        borderRadius: 8,
+        overflow: "hidden",
+        aspectRatio: "4 / 3",
+        background: "radial-gradient(circle at 30% 20%, #332E63 0%, #1A2035 42%, #101526 100%)",
+        border: "1px solid rgba(167, 146, 255, 0.35)",
+      }}
+    >
+      <style>{`
+        @keyframes mentorai-wave {
+          0% { transform: scale(0.92); opacity: 0.55; }
+          70% { transform: scale(1.28); opacity: 0; }
+          100% { transform: scale(1.32); opacity: 0; }
+        }
+        @keyframes mentorai-breathe {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.03); }
+        }
+      `}</style>
+
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#fff",
+          padding: 18,
+          textAlign: "center",
+        }}
+      >
+        <div style={{ position: "relative", width: 108, height: 108, marginBottom: 14 }}>
+          {isSpeaking && [0, 1, 2].map((index) => (
+            <span
+              key={index}
+              style={{
+                position: "absolute",
+                inset: 0,
+                borderRadius: "50%",
+                border: "1px solid rgba(167, 146, 255, 0.55)",
+                animation: "mentorai-wave 1.6s ease-out infinite",
+                animationDelay: `${index * 0.24}s`,
+              }}
+            />
+          ))}
+
+          <div
+            style={{
+              position: "absolute",
+              inset: 10,
+              borderRadius: "50%",
+              background: "linear-gradient(145deg, #8C7BFF 0%, #6C5CE7 65%, #4C3EC0 100%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 18px 36px rgba(0, 0, 0, 0.25)",
+              animation: isSpeaking ? "mentorai-breathe 1s ease-in-out infinite" : "none",
+            }}
+          >
+            <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: "0.08em", fontFamily: fontDisplay }}>
+              11
+            </div>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{agentName}</div>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.72)", marginBottom: 10 }}>{statusLabel}</div>
+        <div
+          style={{
+            maxWidth: 240,
+            fontSize: 12,
+            lineHeight: 1.55,
+            color: "rgba(255,255,255,0.86)",
+          }}
+        >
+          {transcript || "The AI tutor will speak out loud after a student question or a fresh analysis checkpoint."}
+        </div>
+      </div>
+
+      <VideoTileLabel>{agentName}</VideoTileLabel>
+    </div>
+  );
+}
+
+function LiveCallLayout({ studentName, aiSpeaking, aiStatus, aiTranscript }) {
   const { useCallCallingState, useParticipants } = useCallStateHooks();
   const callingState = useCallCallingState();
   const participants = useParticipants();
-
-  if (callingState !== CallingState.JOINED) {
-    return (
-      <div
-        style={{
-          height: 200,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: theme.textMuted,
-          fontSize: 13,
-        }}
-      >
-        Connecting to room...
-      </div>
-    );
-  }
-
   const ordered = [...participants].sort(
     (a, b) => (a.joinedAt?.getTime?.() || 0) - (b.joinedAt?.getTime?.() || 0)
   );
+  const studentParticipant = ordered[0] || null;
 
   return (
     <StreamTheme>
@@ -632,32 +774,45 @@ function LiveCallLayout() {
             marginBottom: 10,
           }}
         >
-          {ordered.length === 0 && (
-            <div
-              style={{
-                aspectRatio: "4 / 3",
-                borderRadius: 8,
-                background: theme.navy,
-              }}
-            />
-          )}
-          {ordered.map((p, i) => (
-            <div
-              key={p.sessionId}
-              style={{
-                position: "relative",
-                borderRadius: 8,
-                overflow: "hidden",
-                aspectRatio: "4 / 3",
-                background: theme.navy,
-              }}
-            >
-              <ParticipantView participant={p} />
-              <VideoTileLabel>{i === 0 ? "Tutor" : "Student"}</VideoTileLabel>
-            </div>
-          ))}
+          <div
+            style={{
+              position: "relative",
+              borderRadius: 8,
+              overflow: "hidden",
+              aspectRatio: "4 / 3",
+              background: theme.navy,
+            }}
+          >
+            {callingState === CallingState.JOINED && studentParticipant ? (
+              <ParticipantView participant={studentParticipant} />
+            ) : (
+              <div
+                style={{
+                  height: "100%",
+                  display: "grid",
+                  placeItems: "center",
+                  color: "rgba(255,255,255,0.72)",
+                  fontSize: 13,
+                }}
+              >
+                Connecting student camera...
+              </div>
+            )}
+            <VideoTileLabel>{studentName || studentParticipant?.name || "Student"}</VideoTileLabel>
+          </div>
+
+          <AITutorTile
+            agentName="ElevenLabs Voice Agent"
+            isSpeaking={aiSpeaking}
+            status={aiStatus}
+            transcript={aiTranscript}
+          />
         </div>
-        <CallControls />
+        {callingState === CallingState.JOINED ? (
+          <CallControls />
+        ) : (
+          <div style={{ fontSize: 12, color: theme.textMuted }}>Joining the student video room...</div>
+        )}
       </div>
     </StreamTheme>
   );
@@ -734,19 +889,6 @@ function TabButton({ active, onClick, children }) {
   );
 }
 
-function useIsTutor() {
-  const { useParticipants, useLocalParticipant } = useCallStateHooks();
-  const participants = useParticipants();
-  const localParticipant = useLocalParticipant();
-
-  if (!localParticipant || participants.length === 0) return true; // no one else here yet — treat self as tutor
-
-  const ordered = [...participants].sort(
-    (a, b) => (a.joinedAt?.getTime?.() || 0) - (b.joinedAt?.getTime?.() || 0)
-  );
-  return ordered[0]?.sessionId === localParticipant.sessionId;
-}
-
 function useSharedProblem(defaultText) {
   const [problem, setProblem] = useState(defaultText);
 
@@ -814,7 +956,7 @@ function useSharedSessionMeta(defaultMeta) {
   return [sessionMeta, updateSessionMeta];
 }
 
-function useSharedChat(isTutor) {
+function useSharedChat() {
   const [messages, setMessages] = useState([]);
   const sentIdsRef = useRef(new Set());
 
@@ -832,10 +974,10 @@ function useSharedChat(isTutor) {
     return unsubscribe;
   }, []);
 
-  const sendChatMessage = (text) => {
+  const sendChatMessage = (text, options = {}) => {
     if (!text.trim()) return;
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const from = isTutor ? "tutor" : "student";
+    const from = options.from === "tutor" ? "tutor" : "student";
     sentIdsRef.current.add(id);
     setMessages((prev) => [...prev, { id, from, text }]);
     call.sendCustomEvent({ type: "chat-message", id, from, text }).catch(() => {});
@@ -1251,6 +1393,7 @@ function useStudentProfileAnalytics(studentName) {
   const [profileSummary, setProfileSummary] = useState(() => loadCachedProfile(studentKey));
   const [profileStatus, setProfileStatus] = useState("idle");
   const [profileError, setProfileError] = useState("");
+  const profileFingerprintRef = useRef(loadCachedProfileFingerprint(studentKey));
 
   const studentStats = buildStudentAnalytics(analyticsStore, studentName);
   const studentStatsRef = useRef(studentStats);
@@ -1313,6 +1456,7 @@ function useStudentProfileAnalytics(studentName) {
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       setProfileSummary(loadCachedProfile(studentKey));
+      profileFingerprintRef.current = loadCachedProfileFingerprint(studentKey);
       setProfileError("");
     }, 0);
 
@@ -1329,6 +1473,7 @@ function useStudentProfileAnalytics(studentName) {
 
       if (event.key === PROFILE_STORAGE_KEY) {
         setProfileSummary(loadCachedProfile(studentKey));
+        profileFingerprintRef.current = loadCachedProfileFingerprint(studentKey);
       }
     };
 
@@ -1336,11 +1481,18 @@ function useStudentProfileAnalytics(studentName) {
     return () => window.removeEventListener("storage", handleStorage);
   }, [studentKey]);
 
-  const refreshProfile = useCallback(async (snapshot) => {
+  const refreshProfile = useCallback(async (snapshot, options = {}) => {
     const targetSnapshot = snapshot || studentStatsRef.current;
+    const targetFingerprint = String(targetSnapshot?.analysisFingerprint || "");
 
     if (!targetSnapshot.totalAnalyses) {
       setProfileStatus("idle");
+      return;
+    }
+
+    if (!options.force && targetFingerprint && profileFingerprintRef.current === targetFingerprint) {
+      setProfileStatus("success");
+      setProfileError("");
       return;
     }
 
@@ -1353,7 +1505,7 @@ function useStudentProfileAnalytics(studentName) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           studentName,
-          sessions: targetSnapshot.sessions,
+          sessions: targetSnapshot.analysisSessions?.length ? targetSnapshot.analysisSessions : targetSnapshot.sessions,
           subjectStats: targetSnapshot.subjectStats,
         }),
       });
@@ -1365,7 +1517,8 @@ function useStudentProfileAnalytics(studentName) {
       }
 
       setProfileSummary(payload);
-      saveCachedProfile(studentKey, payload);
+      saveCachedProfile(studentKey, payload, targetFingerprint);
+      profileFingerprintRef.current = targetFingerprint;
       setProfileStatus("success");
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : "Profile summary failed");
@@ -1423,10 +1576,12 @@ function useStudentProfileAnalytics(studentName) {
     );
   };
 
-  const recordAnalysis = ({ studentName: activeStudentName, subject, problem, analysis }) => {
+  const recordAnalysis = ({ studentName: activeStudentName, subject, problem, analysis, messages = [], assignment = null }) => {
     const createdAt = new Date().toISOString();
     const normalizedStudent = normalizeLabel(activeStudentName, "Student");
     const normalizedSubject = normalizeLabel(subject, "General");
+    const normalizedMessages = normalizeStoredMessages(messages);
+    const normalizedAssignment = normalizeStoredAssignment(assignment);
     const normalizedAnalysis = {
       ...analysis,
       confidence: normalizeConfidenceScore(
@@ -1452,32 +1607,39 @@ function useStudentProfileAnalytics(studentName) {
       adaptationNote: String(analysis?.adaptationNote || "").trim().slice(0, 240),
     };
 
-    let nextSnapshot = null;
-
     setAnalyticsStore((prev) => {
       const nextEntry = {
         id: `analysis-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt,
         subject: normalizedSubject,
         problem,
+        messagesSnapshot: normalizedMessages,
+        assignmentSnapshot: normalizedAssignment,
         analysis: normalizedAnalysis,
       };
 
-      const nextStore = updateSessionRecord(prev, normalizedStudent, normalizedSubject, (session) => ({
-        ...session,
-        problem,
-        analyses: [...(session.analyses || []), nextEntry],
-      }));
+      return updateSessionRecord(prev, normalizedStudent, normalizedSubject, (session) => {
+        const reviewAssignments = Array.isArray(session.reviewAssignments) ? [...session.reviewAssignments] : [];
 
-      nextSnapshot = buildStudentAnalytics(nextStore, normalizedStudent);
-      return nextStore;
+        if (normalizedAssignment) {
+          const existingAssignmentIndex = reviewAssignments.findIndex((item) => item.id === normalizedAssignment.id);
+          if (existingAssignmentIndex >= 0) {
+            reviewAssignments[existingAssignmentIndex] = normalizedAssignment;
+          } else {
+            reviewAssignments.push(normalizedAssignment);
+          }
+        }
+
+        return {
+          ...session,
+          problem,
+          messages: normalizedMessages,
+          currentAssignment: normalizedAssignment,
+          reviewAssignments: reviewAssignments.slice(-6),
+          analyses: [...(session.analyses || []), nextEntry],
+        };
+      });
     });
-
-    if (nextSnapshot) {
-      window.setTimeout(() => {
-        refreshProfile(nextSnapshot);
-      }, 0);
-    }
   };
 
   return {
@@ -1693,15 +1855,19 @@ function MentorAIDemoInner() {
   const [mentorTab, setMentorTab] = useState("insights");
   const [chatInput, setChatInput] = useState("");
   const [questionMenuOpen, setQuestionMenuOpen] = useState(false);
-  const isTutor = useIsTutor();
   const [sessionMeta, updateSessionMeta] = useSharedSessionMeta({ studentName: "", subject: "", updatedAt: 0 });
   const [problem, setProblem] = useSharedProblem("");
-  const [messages, sendChatMessage] = useSharedChat(isTutor);
+  const [messages, sendChatMessage] = useSharedChat();
   const whiteboard = useWhiteboard();
   const [lastSnapshotInfo, setLastSnapshotInfo] = useState(null);
+  const [aiTutorStatus, setAiTutorStatus] = useState("idle");
+  const [aiTutorError, setAiTutorError] = useState("");
+  const [aiTutorReply, setAiTutorReply] = useState(null);
+  const [aiTutorSpeaking, setAiTutorSpeaking] = useState(false);
+  const audioRef = useRef(null);
   const { analysis, analysisStatus, analysisError, broadcastLoading, broadcastSuccess, broadcastError } =
     useSharedAnalysis();
-  const { assignment, lastRemoteSyncAt, assignSuggestedReview, updateResponse, gradeResponse } = useSharedTutorReview();
+  const { assignment, assignSuggestedReview, updateResponse, gradeResponse } = useSharedTutorReview();
   const studentName = String(sessionMeta.studentName || "");
   const subject = String(sessionMeta.subject || "");
   const displayStudentName = normalizeLabel(studentName, "Student");
@@ -1720,7 +1886,7 @@ function MentorAIDemoInner() {
   const effectiveProfile = profileSummary || buildFallbackProfile(displayStudentName, studentStats);
   const adaptiveProfile = buildAdaptiveProfile({
     studentName: displayStudentName,
-    sessions: studentStats.sessions,
+    sessions: studentStats.analysisSessions?.length ? studentStats.analysisSessions : studentStats.sessions,
     observations: studentStats.observations,
     subjectStats: studentStats.subjectStats,
     latestObservation: studentStats.latestObservation,
@@ -1814,15 +1980,35 @@ function MentorAIDemoInner() {
   });
   const hasQuestionSuggestions = Boolean(assignmentSourceAnalysis && suggestedQuestions.length);
 
-  useEffect(() => {
-    if (!lastRemoteSyncAt) return undefined;
+  const stopAiAudio = useCallback(() => {
+    const currentAudio = audioRef.current;
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.src = "";
+      audioRef.current = null;
+    }
+    setAiTutorSpeaking(false);
+  }, []);
 
-    const timeout = window.setTimeout(() => {
-      setMentorTab("recs");
-    }, 0);
+  const playAiAudio = useCallback(
+    async (audioBase64, mimeType = "audio/mpeg") => {
+      if (!audioBase64) return;
 
-    return () => window.clearTimeout(timeout);
-  }, [lastRemoteSyncAt]);
+      stopAiAudio();
+
+      const audio = new Audio(`data:${mimeType};base64,${audioBase64}`);
+      audioRef.current = audio;
+
+      audio.addEventListener("play", () => setAiTutorSpeaking(true), { once: true });
+      audio.addEventListener("ended", () => setAiTutorSpeaking(false), { once: true });
+      audio.addEventListener("pause", () => setAiTutorSpeaking(false), { once: true });
+
+      await audio.play();
+    },
+    [stopAiAudio]
+  );
+
+  useEffect(() => () => stopAiAudio(), [stopAiAudio]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -1838,22 +2024,73 @@ function MentorAIDemoInner() {
     return () => window.clearTimeout(timeout);
   }, [displayStudentName, displaySubject, problem, messages, assignment, syncSessionContext]);
 
-  const handleAssignSuggestedReview = () => {
-    if (!assignmentSourceAnalysis) return;
-    const nextAssignment = buildSuggestedReviewAssignment({
-      analysis: assignmentSourceAnalysis,
-      subject: displaySubject,
-      studentName: displayStudentName,
-      problem: assignmentSourceProblem,
-    });
-    assignSuggestedReview(nextAssignment);
+  const handleAskAiTutor = async ({ studentMessage = "" } = {}) => {
+    setAiTutorStatus("loading");
+    setAiTutorError("");
     setMentorTab("recs");
+
+    try {
+      const response = await fetch("/api/ai-tutor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentName: displayStudentName,
+          subject: displaySubject,
+          problem,
+          studentMessage,
+          chatHistory: messages,
+          analysis: assignmentSourceAnalysis,
+          latestLessonRecap: effectiveProfile.latestLessonRecap,
+          focusSkills: effectiveFocusSkills.slice(0, 3),
+          effectivePracticeModes: effectivePracticeModes.slice(0, 3),
+          targetedPractice: (latestTargetedPractice.length ? latestTargetedPractice : currentTargetedPractice).slice(0, 3),
+          strengths: (effectiveProfile.strengths || studentStats.topStrengths.map((item) => item.label)).slice(0, 3),
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "AI tutor response failed");
+      }
+
+      setAiTutorReply(payload);
+      setAiTutorStatus("ready");
+
+      if (payload?.text) {
+        sendChatMessage(payload.text, { from: "tutor" });
+      }
+
+      if (payload?.audioBase64) {
+        try {
+          await playAiAudio(payload.audioBase64, payload.audioMimeType);
+        } catch {
+          setAiTutorError("The AI tutor wrote a response, but the browser blocked autoplay. Tap the button again to play it.");
+        }
+      }
+    } catch (error) {
+      setAiTutorStatus("error");
+      setAiTutorError(error instanceof Error ? error.message : "AI tutor response failed");
+    }
   };
 
   const handleUseSuggestedQuestion = (nextQuestion) => {
     setProblem(nextQuestion);
     recordSuggestedPrompt({ studentName: displayStudentName, subject: displaySubject, prompt: nextQuestion });
     setQuestionMenuOpen(false);
+  };
+
+  const handleAssignSuggestedReview = () => {
+    if (!assignmentSourceAnalysis) return;
+
+    assignSuggestedReview(
+      buildSuggestedReviewAssignment({
+        analysis: assignmentSourceAnalysis,
+        subject: displaySubject,
+        studentName: displayStudentName,
+        problem: assignmentSourceProblem,
+      })
+    );
   };
 
   const handleAnalyze = async () => {
@@ -1882,7 +2119,14 @@ function MentorAIDemoInner() {
       }
 
       broadcastSuccess(payload);
-      recordAnalysis({ studentName: displayStudentName, subject: displaySubject, problem, analysis: payload });
+      recordAnalysis({
+        studentName: displayStudentName,
+        subject: displaySubject,
+        problem,
+        analysis: payload,
+        messages,
+        assignment,
+      });
     } catch (error) {
       broadcastError(error instanceof Error ? error.message : "MentorAI analysis failed");
     }
@@ -1896,9 +2140,13 @@ function MentorAIDemoInner() {
     link.click();
   };
 
-  const sendMessage = () => {
-    sendChatMessage(chatInput);
+  const sendMessage = async () => {
+    const nextMessage = chatInput.trim();
+    if (!nextMessage) return;
+
+    sendChatMessage(nextMessage, { from: "student" });
     setChatInput("");
+    await handleAskAiTutor({ studentMessage: nextMessage });
   };
 
   return (
@@ -1941,8 +2189,13 @@ function MentorAIDemoInner() {
       <div style={{ display: "grid", gridTemplateColumns: "320px 1fr 300px", gap: 16, padding: 16 }}>
         {/* LEFT: Video */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <Panel title="Video room">
-            <LiveCallLayout />
+          <Panel title="Student + AI tutor">
+            <LiveCallLayout
+              studentName={displayStudentName}
+              aiSpeaking={aiTutorSpeaking}
+              aiStatus={aiTutorStatus}
+              aiTranscript={aiTutorReply?.text || ""}
+            />
           </Panel>
 
           <div
@@ -1959,7 +2212,7 @@ function MentorAIDemoInner() {
             }}
           >
             <Sparkles size={13} style={{ marginTop: 2, flexShrink: 0 }} />
-            <span>MentorAI is observing learning patterns to support the session.</span>
+            <span>MentorAI now replies directly to the student, then speaks the coaching out loud through an ElevenLabs voice agent.</span>
           </div>
         </div>
 
@@ -1981,183 +2234,184 @@ function MentorAIDemoInner() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
                 <div>
                   <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Student</div>
-                  {isTutor ? (
-                    <input
-                      value={studentName}
-                      onChange={(e) => updateSessionMeta({ studentName: e.target.value })}
-                      placeholder="Student name"
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        border: `1px solid ${theme.border}`,
-                        borderRadius: 8,
-                        padding: "9px 12px",
-                        fontSize: 13,
-                        fontFamily: fontBody,
-                        outline: "none",
-                        background: "#fff",
-                      }}
-                    />
-                  ) : (
-                    <div
-                      style={{
-                        border: `1px solid ${theme.border}`,
-                        borderRadius: 8,
-                        padding: "9px 12px",
-                        fontSize: 13,
-                        background: "#F8F7F2",
-                      }}
-                    >
-                      {studentName}
-                    </div>
-                  )}
+                  <input
+                    value={studentName}
+                    onChange={(e) => updateSessionMeta({ studentName: e.target.value })}
+                    placeholder="Student name"
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: 8,
+                      padding: "9px 12px",
+                      fontSize: 13,
+                      fontFamily: fontBody,
+                      outline: "none",
+                      background: "#fff",
+                    }}
+                  />
                 </div>
 
                 <div>
                   <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Subject</div>
-                  {isTutor ? (
-                    <input
-                      value={subject}
-                      onChange={(e) => updateSessionMeta({ subject: e.target.value })}
-                      placeholder="Subject"
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        border: `1px solid ${theme.border}`,
-                        borderRadius: 8,
-                        padding: "9px 12px",
-                        fontSize: 13,
-                        fontFamily: fontBody,
-                        outline: "none",
-                        background: "#fff",
-                      }}
-                    />
-                  ) : (
-                    <div
-                      style={{
-                        border: `1px solid ${theme.border}`,
-                        borderRadius: 8,
-                        padding: "9px 12px",
-                        fontSize: 13,
-                        background: "#F8F7F2",
-                      }}
-                    >
-                      {subject}
-                    </div>
-                  )}
+                  <input
+                    value={subject}
+                    onChange={(e) => updateSessionMeta({ subject: e.target.value })}
+                    placeholder="Subject"
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: 8,
+                      padding: "9px 12px",
+                      fontSize: 13,
+                      fontFamily: fontBody,
+                      outline: "none",
+                      background: "#fff",
+                    }}
+                  />
                 </div>
               </div>
 
               <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
                 Problem
-                {isTutor && (
-                  <span style={{ color: theme.purple, fontWeight: 500, fontSize: 11 }}>
-                    &middot; you're the tutor, this is editable
-                  </span>
-                )}
+                <span style={{ color: theme.purple, fontWeight: 500, fontSize: 11 }}>
+                  &middot; shared live with the AI tutor
+                </span>
               </div>
-              {isTutor ? (
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 16 }}>
-                  <input
-                    value={problem}
-                    onChange={(e) => setProblem(e.target.value)}
-                    placeholder="Enter the problem for this session"
-                    style={{
-                      flex: 1,
-                      fontFamily: fontMono,
-                      fontSize: 15,
-                      background: "#F5F4EE",
-                      border: `1px solid ${theme.purple}`,
-                      borderRadius: 8,
-                      padding: "10px 14px",
-                      width: "100%",
-                      boxSizing: "border-box",
-                      outline: "none",
-                    }}
-                  />
-
-                  <div style={{ position: "relative", flexShrink: 0 }}>
-                    <button
-                      onClick={() => setQuestionMenuOpen((open) => !open)}
-                      disabled={!hasQuestionSuggestions}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        border: `1px solid ${theme.border}`,
-                        background: "#fff",
-                        color: theme.text,
-                        borderRadius: 8,
-                        padding: "10px 12px",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: hasQuestionSuggestions ? "pointer" : "not-allowed",
-                        opacity: hasQuestionSuggestions ? 1 : 0.6,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      Suggested question
-                      <ChevronDown size={14} />
-                    </button>
-
-                    {questionMenuOpen && hasQuestionSuggestions && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: "calc(100% + 8px)",
-                          right: 0,
-                          width: 320,
-                          maxWidth: "calc(100vw - 48px)",
-                          background: "#fff",
-                          border: `1px solid ${theme.border}`,
-                          borderRadius: 10,
-                          boxShadow: "0 16px 40px rgba(22, 27, 46, 0.12)",
-                          padding: 8,
-                          zIndex: 4,
-                        }}
-                      >
-                        <div style={{ fontSize: 11, color: theme.textMuted, padding: "4px 8px 8px" }}>
-                          Built from the latest guided path and previous prompts.
-                        </div>
-                        {suggestedQuestions.map((item) => (
-                          <button
-                            key={item.id}
-                            onClick={() => handleUseSuggestedQuestion(item.prompt)}
-                            style={{
-                              width: "100%",
-                              textAlign: "left",
-                              border: "none",
-                              background: "transparent",
-                              borderRadius: 8,
-                              padding: "10px 10px",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <div style={{ fontSize: 13, color: theme.text, lineHeight: 1.45, marginBottom: 4 }}>
-                              {item.prompt}
-                            </div>
-                            <div style={{ fontSize: 11, color: theme.textMuted }}>{item.note}</div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 16 }}>
+                <input
+                  value={problem}
+                  onChange={(e) => setProblem(e.target.value)}
+                  placeholder="Enter the problem for this session"
                   style={{
+                    flex: 1,
                     fontFamily: fontMono,
                     fontSize: 15,
                     background: "#F5F4EE",
-                    border: `1px solid ${theme.border}`,
+                    border: `1px solid ${theme.purple}`,
                     borderRadius: 8,
                     padding: "10px 14px",
-                    marginBottom: 16,
+                    width: "100%",
+                    boxSizing: "border-box",
+                    outline: "none",
                   }}
-                >
-                  {problem}
+                />
+
+                <div style={{ position: "relative", flexShrink: 0 }}>
+                  <button
+                    onClick={() => setQuestionMenuOpen((open) => !open)}
+                    disabled={!hasQuestionSuggestions}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      border: `1px solid ${theme.border}`,
+                      background: "#fff",
+                      color: theme.text,
+                      borderRadius: 8,
+                      padding: "10px 12px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: hasQuestionSuggestions ? "pointer" : "not-allowed",
+                      opacity: hasQuestionSuggestions ? 1 : 0.6,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Suggested question
+                    <ChevronDown size={14} />
+                  </button>
+
+                  {questionMenuOpen && hasQuestionSuggestions && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 8px)",
+                        right: 0,
+                        width: 320,
+                        maxWidth: "calc(100vw - 48px)",
+                        background: "#fff",
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: 10,
+                        boxShadow: "0 16px 40px rgba(22, 27, 46, 0.12)",
+                        padding: 8,
+                        zIndex: 4,
+                      }}
+                    >
+                      <div style={{ fontSize: 11, color: theme.textMuted, padding: "4px 8px 8px" }}>
+                        Built from the latest guided path and previous prompts.
+                      </div>
+                      {suggestedQuestions.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => handleUseSuggestedQuestion(item.prompt)}
+                          style={{
+                            width: "100%",
+                            textAlign: "left",
+                            border: "none",
+                            background: "transparent",
+                            borderRadius: 8,
+                            padding: "10px 10px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <div style={{ fontSize: 13, color: theme.text, lineHeight: 1.45, marginBottom: 4 }}>
+                            {item.prompt}
+                          </div>
+                          <div style={{ fontSize: 11, color: theme.textMuted }}>{item.note}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
+
+              <div
+                style={{
+                  background: "#fff",
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 10,
+                  padding: 12,
+                  marginBottom: 16,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>AI tutor voice</div>
+                    <div style={{ fontSize: 12, color: theme.textMuted }}>
+                      Generate a spoken explanation from the current problem, whiteboard state, and saved learning profile.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleAskAiTutor()}
+                    disabled={aiTutorStatus === "loading"}
+                    style={{
+                      border: "none",
+                      background: theme.navy,
+                      color: "#fff",
+                      borderRadius: 8,
+                      padding: "10px 12px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: aiTutorStatus === "loading" ? "not-allowed" : "pointer",
+                      opacity: aiTutorStatus === "loading" ? 0.7 : 1,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {aiTutorStatus === "loading" ? "Preparing voice..." : "Speak with ElevenLabs"}
+                  </button>
+                </div>
+
+                <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 1.55 }}>
+                  {aiTutorReply?.text || "Ask a question in chat or tap the button to have the AI tutor explain the next step out loud."}
+                </div>
+
+                {aiTutorError && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: theme.red }}>
+                    {aiTutorError}
+                  </div>
+                )}
+              </div>
 
               <div
                 ref={whiteboard.containerRef}
@@ -2627,13 +2881,13 @@ function MentorAIDemoInner() {
                         {studentStats.totalSessions} sessions logged &middot; {studentStats.totalAnalyses} analyses
                       </div>
                       <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 2 }}>
-                        Profile learning updates on saved analyses.
+                        Profile learning updates on saved analyses only. AI summaries stay cached until you refresh them.
                       </div>
                     </div>
                   </div>
 
                   <button
-                    onClick={() => refreshProfile()}
+                    onClick={() => refreshProfile(undefined, { force: true })}
                     disabled={profileStatus === "loading" || !studentStats.totalAnalyses}
                     style={{
                       border: `1px solid ${theme.border}`,
@@ -2647,7 +2901,7 @@ function MentorAIDemoInner() {
                       opacity: profileStatus === "loading" || !studentStats.totalAnalyses ? 0.6 : 1,
                     }}
                   >
-                    {profileStatus === "loading" ? "Refreshing..." : "Refresh"}
+                    {profileStatus === "loading" ? "Refreshing..." : "Refresh AI summary"}
                   </button>
                 </div>
 
@@ -2860,33 +3114,27 @@ function MentorAIDemoInner() {
                         marginBottom: 12,
                       }}
                     >
-                      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Tutor tools</div>
+                      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>AI tutor practice tools</div>
                       <div style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 10 }}>
-                        Build a shared review, quiz, and exercise set from the latest guided learning path. It only appears after you assign it here.
+                        Build a shared review, quiz, and exercise set from the latest guided learning path. It appears after you generate it here.
                       </div>
-                      {isTutor ? (
-                        <button
-                          onClick={handleAssignSuggestedReview}
-                          disabled={!assignmentSourceAnalysis}
-                          style={{
-                            border: "none",
-                            background: theme.navy,
-                            color: "#fff",
-                            borderRadius: 8,
-                            padding: "10px 12px",
-                            fontSize: 13,
-                            fontWeight: 600,
-                            cursor: assignmentSourceAnalysis ? "pointer" : "not-allowed",
-                            opacity: assignmentSourceAnalysis ? 1 : 0.6,
-                          }}
-                        >
-                          Assign suggested review
-                        </button>
-                      ) : (
-                        <div style={{ fontSize: 12, color: theme.textMuted }}>
-                          Waiting for the tutor to assign a suggested review.
-                        </div>
-                      )}
+                      <button
+                        onClick={handleAssignSuggestedReview}
+                        disabled={!assignmentSourceAnalysis}
+                        style={{
+                          border: "none",
+                          background: theme.navy,
+                          color: "#fff",
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: assignmentSourceAnalysis ? "pointer" : "not-allowed",
+                          opacity: assignmentSourceAnalysis ? 1 : 0.6,
+                        }}
+                      >
+                        Generate suggested review
+                      </button>
                     </div>
 
                     {assignment && (
@@ -2940,81 +3188,62 @@ function MentorAIDemoInner() {
                           >
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
                               <div style={{ fontSize: 12, fontWeight: 600 }}>{item.kind}</div>
-                              <div style={{ fontSize: 11, color: theme.textMuted }}>{isTutor ? "Tutor view" : "Student view"}</div>
+                              <div style={{ fontSize: 11, color: theme.textMuted }}>Student + AI tutor</div>
                             </div>
                             <div style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 8 }}>{item.prompt}</div>
                             <div style={{ fontSize: 11, color: theme.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
                               {item.coachNote}
                             </div>
 
-                            {isTutor ? (
-                              <div
+                            <textarea
+                              value={assignment.responses?.[item.id] || ""}
+                              onChange={(e) => updateResponse(item.id, e.target.value)}
+                              placeholder="Type your response here..."
+                              style={{
+                                width: "100%",
+                                minHeight: 72,
+                                border: `1px solid ${theme.border}`,
+                                borderRadius: 8,
+                                padding: "10px 12px",
+                                fontSize: 13,
+                                fontFamily: fontBody,
+                                resize: "vertical",
+                                outline: "none",
+                                background: "#fff",
+                                boxSizing: "border-box",
+                              }}
+                            />
+
+                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              <button
+                                onClick={() => gradeResponse(item.id, "pass")}
                                 style={{
-                                  minHeight: 72,
-                                  border: `1px solid ${theme.border}`,
+                                  border: `1px solid ${assignment.grades?.[item.id] === "pass" ? theme.greenLight : theme.border}`,
+                                  background: assignment.grades?.[item.id] === "pass" ? theme.greenSoft : "#fff",
+                                  color: theme.green,
                                   borderRadius: 8,
-                                  padding: "10px 12px",
-                                  background: "#F7F6F1",
-                                  fontSize: 13,
-                                  lineHeight: 1.55,
-                                  whiteSpace: "pre-wrap",
+                                  padding: "7px 10px",
+                                  fontSize: 12,
+                                  fontWeight: 600,
                                 }}
                               >
-                                {assignment.responses?.[item.id] || "Waiting for the student response..."}
-                              </div>
-                            ) : (
-                              <textarea
-                                value={assignment.responses?.[item.id] || ""}
-                                onChange={(e) => updateResponse(item.id, e.target.value)}
-                                placeholder="Type your response here..."
+                                ✓ Mark pass
+                              </button>
+                              <button
+                                onClick={() => gradeResponse(item.id, "retry")}
                                 style={{
-                                  width: "100%",
-                                  minHeight: 72,
-                                  border: `1px solid ${theme.border}`,
+                                  border: `1px solid ${assignment.grades?.[item.id] === "retry" ? theme.red : theme.border}`,
+                                  background: assignment.grades?.[item.id] === "retry" ? theme.redSoft : "#fff",
+                                  color: theme.red,
                                   borderRadius: 8,
-                                  padding: "10px 12px",
-                                  fontSize: 13,
-                                  fontFamily: fontBody,
-                                  resize: "vertical",
-                                  outline: "none",
-                                  background: "#fff",
-                                  boxSizing: "border-box",
+                                  padding: "7px 10px",
+                                  fontSize: 12,
+                                  fontWeight: 600,
                                 }}
-                              />
-                            )}
-
-                            {isTutor && (
-                              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                                <button
-                                  onClick={() => gradeResponse(item.id, "pass")}
-                                  style={{
-                                    border: `1px solid ${assignment.grades?.[item.id] === "pass" ? theme.greenLight : theme.border}`,
-                                    background: assignment.grades?.[item.id] === "pass" ? theme.greenSoft : "#fff",
-                                    color: theme.green,
-                                    borderRadius: 8,
-                                    padding: "7px 10px",
-                                    fontSize: 12,
-                                    fontWeight: 600,
-                                  }}
-                                >
-                                  ✓ Check
-                                </button>
-                                <button
-                                  onClick={() => gradeResponse(item.id, "retry")}
-                                  style={{
-                                    border: `1px solid ${assignment.grades?.[item.id] === "retry" ? theme.red : theme.border}`,
-                                    background: assignment.grades?.[item.id] === "retry" ? theme.redSoft : "#fff",
-                                    color: theme.red,
-                                    borderRadius: 8,
-                                    padding: "7px 10px",
-                                    fontSize: 12,
-                                    fontWeight: 600,
-                                  }}
-                                >
-                                  ✕ Wrong
-                                </button>
-                              </div>
-                            )}
+                              >
+                                ✕ Mark retry
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -3148,7 +3377,7 @@ function MentorAIDemoInner() {
           </div>
           <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8, maxHeight: 120, overflowY: "auto" }}>
             {messages.map((m) => {
-              const isMine = m.from === (isTutor ? "tutor" : "student");
+              const isMine = m.from === "student";
               return (
                 <div key={m.id} style={{ display: "flex", justifyContent: isMine ? "flex-end" : "flex-start" }}>
                   <div

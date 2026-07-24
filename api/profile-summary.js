@@ -62,9 +62,19 @@ function getLatestAnalyzedSession(sessions = []) {
   return [...sessions].reverse().find((session) => Array.isArray(session?.analyses) && session.analyses.length) || null;
 }
 
-function buildConversationSignals(sessions = []) {
+function getLatestAnalyzedCheckpoint(sessions = []) {
   const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
-  const messages = normalizeMessages(latestSession?.messages || []);
+  const latestEntry = latestSession?.analyses?.[latestSession.analyses.length - 1] || null;
+
+  return {
+    session: latestSession,
+    entry: latestEntry,
+  };
+}
+
+function buildConversationSignals(sessions = []) {
+  const { session: latestSession, entry: latestEntry } = getLatestAnalyzedCheckpoint(sessions);
+  const messages = normalizeMessages(latestEntry?.messagesSnapshot || latestSession?.messages || []);
   if (!messages.length) return [];
 
   const studentMessages = messages.filter((message) => message.from === "student").map((message) => message.text.toLowerCase());
@@ -91,10 +101,10 @@ function buildConversationSignals(sessions = []) {
 }
 
 function buildLatestLessonRecap(studentName, sessions = [], subjectStats = []) {
-  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
-  const latestAnalysis = latestSession?.analyses?.[latestSession.analyses.length - 1] || null;
-  const subject = latestAnalysis?.subject || latestSession?.subject || subjectStats[0]?.subject || "the current topic";
-  const problem = String(latestAnalysis?.problem || latestSession?.problem || "this problem").trim() || "this problem";
+  const { session: latestSession, entry: latestEntry } = getLatestAnalyzedCheckpoint(sessions);
+  const latestAnalysis = latestEntry?.analysis || latestEntry || null;
+  const subject = latestEntry?.subject || latestSession?.subject || subjectStats[0]?.subject || "the current topic";
+  const problem = String(latestEntry?.problem || latestSession?.problem || "this problem").trim() || "this problem";
   const misconception = latestAnalysis?.misconception || "the main focus area";
 
   return `${studentName} worked through ${problem} in ${String(subject).toLowerCase()}, with the session focused on clarifying ${String(
@@ -103,9 +113,9 @@ function buildLatestLessonRecap(studentName, sessions = [], subjectStats = []) {
 }
 
 function buildReviewVideoBrief(studentName, sessions = [], subjectStats = []) {
-  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
-  const latestAnalysis = latestSession?.analyses?.[latestSession.analyses.length - 1] || null;
-  const problem = String(latestAnalysis?.problem || latestSession?.problem || "the lesson problem").trim() || "the lesson problem";
+  const { session: latestSession, entry: latestEntry } = getLatestAnalyzedCheckpoint(sessions);
+  const latestAnalysis = latestEntry?.analysis || latestEntry || null;
+  const problem = String(latestEntry?.problem || latestSession?.problem || "the lesson problem").trim() || "the lesson problem";
   const misconception = latestAnalysis?.misconception || subjectStats[0]?.topMisconception || "the main concept";
   const strength = latestAnalysis?.strengths?.[0] || subjectStats[0]?.topStrength || "staying engaged with the problem";
 
@@ -293,9 +303,30 @@ export default async function handler(req, res) {
       : [],
     analyses: Array.isArray(session?.analyses)
       ? session.analyses.slice(-6).map((entry) => ({
+          id: entry?.id,
           createdAt: entry?.createdAt,
           subject: entry?.subject,
           problem: String(entry?.problem || "").slice(0, 240),
+          messagesSnapshot: normalizeMessages(entry?.messagesSnapshot || []),
+          assignmentSnapshot: entry?.assignmentSnapshot
+            ? {
+                id: entry.assignmentSnapshot?.id,
+                title: entry.assignmentSnapshot?.title,
+                summary: entry.assignmentSnapshot?.summary,
+                learningPath: Array.isArray(entry.assignmentSnapshot?.learningPath)
+                  ? entry.assignmentSnapshot.learningPath.slice(0, 3)
+                  : [],
+                items: Array.isArray(entry.assignmentSnapshot?.items)
+                  ? entry.assignmentSnapshot.items.slice(0, 4).map((item) => ({
+                      kind: item?.kind,
+                      prompt: String(item?.prompt || "").slice(0, 240),
+                      coachNote: String(item?.coachNote || "").slice(0, 180),
+                    }))
+                  : [],
+                responses: entry.assignmentSnapshot?.responses || {},
+                grades: entry.assignmentSnapshot?.grades || {},
+              }
+            : null,
           misconception: entry?.analysis?.misconception,
           confidence: entry?.analysis?.confidence,
           explanation: entry?.analysis?.explanation,
