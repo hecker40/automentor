@@ -1373,18 +1373,6 @@ function useStudentProfileAnalytics(studentName) {
     }
   }, [studentKey, studentName]);
 
-  const analysisCount = studentStats.totalAnalyses;
-  const analysisFingerprint = studentStats.analysisFingerprint;
-
-  useEffect(() => {
-    if (!analysisCount) return;
-    const timeout = window.setTimeout(() => {
-      refreshProfile(studentStatsRef.current);
-    }, 900);
-
-    return () => window.clearTimeout(timeout);
-  }, [studentKey, analysisCount, analysisFingerprint, refreshProfile]);
-
   const syncSessionContext = useCallback(({ studentName: activeStudentName, subject, problem, messages, assignment }) => {
     setAnalyticsStore((prev) =>
       updateSessionRecord(prev, activeStudentName, subject, (session) => {
@@ -1464,6 +1452,8 @@ function useStudentProfileAnalytics(studentName) {
       adaptationNote: String(analysis?.adaptationNote || "").trim().slice(0, 240),
     };
 
+    let nextSnapshot = null;
+
     setAnalyticsStore((prev) => {
       const nextEntry = {
         id: `analysis-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1473,12 +1463,21 @@ function useStudentProfileAnalytics(studentName) {
         analysis: normalizedAnalysis,
       };
 
-      return updateSessionRecord(prev, normalizedStudent, normalizedSubject, (session) => ({
+      const nextStore = updateSessionRecord(prev, normalizedStudent, normalizedSubject, (session) => ({
         ...session,
         problem,
         analyses: [...(session.analyses || []), nextEntry],
       }));
+
+      nextSnapshot = buildStudentAnalytics(nextStore, normalizedStudent);
+      return nextStore;
     });
+
+    if (nextSnapshot) {
+      window.setTimeout(() => {
+        refreshProfile(nextSnapshot);
+      }, 0);
+    }
   };
 
   return {
@@ -1783,6 +1782,30 @@ function MentorAIDemoInner() {
     currentAnalysisSkillBreakdown[0]?.skill ||
     studentStats.topMisconceptions[0]?.label ||
     displaySubject;
+  const maxFocusSkillSignals = Math.max(...effectiveFocusSkills.map((item) => Number(item?.occurrences || 0)), 1);
+  const focusSkillVisuals = effectiveFocusSkills.slice(0, 4).map((item) => ({
+    ...item,
+    pct: clampPercent((Number(item?.occurrences || 0) / maxFocusSkillSignals) * 100),
+  }));
+  const practiceModeVisuals = effectivePracticeModes.slice(0, 4).map((item) => ({
+    ...item,
+    pct: clampPercent(Number(item?.passRate || 0)),
+  }));
+  const recentCheckpointVisuals = studentStats.observations
+    .slice(-4)
+    .reverse()
+    .map((entry) => {
+      const entryAnalysis = entry?.analysis || {};
+      const confidencePct = clampPercent(normalizeConfidenceScore(entryAnalysis?.confidence, true) * 100);
+      const checkpointSkill = entryAnalysis?.skillBreakdown?.[0]?.skill || entryAnalysis?.misconception || entry?.subject || displaySubject;
+      return {
+        id: entry?.id || `${entry?.createdAt}-${checkpointSkill}`,
+        title: checkpointSkill,
+        subtitle: `${normalizeLabel(entry?.subject, displaySubject)} · ${confidencePct}% confidence`,
+        note: entryAnalysis?.adaptationNote || entryAnalysis?.explanation || "MentorAI saved this checkpoint to guide the next move.",
+        tone: confidencePct >= 75 ? "good" : confidencePct >= 45 ? "muted" : "warn",
+      };
+    });
   const suggestedQuestions = buildSuggestedQuestions({
     analysis: assignmentSourceAnalysis,
     studentStats,
@@ -2507,26 +2530,52 @@ function MentorAIDemoInner() {
                       </div>
                     )}
 
-                    {effectiveFocusSkills.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+                      <MetricCard label="Primary focus" value={repeatedFocusSkill} tone="warn" />
+                      <MetricCard
+                        label="Best response mode"
+                        value={practiceModeVisuals[0]?.mode || "Collecting data"}
+                        tone={practiceModeVisuals[0]?.passRate >= 70 ? "good" : "muted"}
+                      />
+                    </div>
+
+                    {focusSkillVisuals.length > 0 && (
                       <div style={{ marginBottom: 12 }}>
                         <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Recurring focus skills</div>
-                        {effectiveFocusSkills.slice(0, 3).map((item) => (
-                          <div
+                        {focusSkillVisuals.slice(0, 3).map((item) => (
+                          <InsightBar
                             key={item.skill}
-                            style={{
-                              background: "#fff",
-                              border: `1px solid ${theme.border}`,
-                              borderRadius: 8,
-                              padding: "10px 12px",
-                              marginBottom: 8,
-                            }}
-                          >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-                              <div style={{ fontSize: 13, fontWeight: 600 }}>{item.skill}</div>
-                              <div style={{ fontSize: 11, color: theme.textMuted }}>{item.occurrences} signals</div>
-                            </div>
-                            <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 1.55 }}>{item.note}</div>
-                          </div>
+                            label={item.skill}
+                            pct={item.pct}
+                            color={theme.amber}
+                            detail={`${item.occurrences} signals`}
+                            note={item.note}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {practiceModeVisuals.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Interventions for this student</div>
+                        {practiceModeVisuals.slice(0, 3).map((item) => (
+                          <InsightBar
+                            key={item.mode}
+                            label={item.mode}
+                            pct={item.pct}
+                            color={item.passRate >= 70 ? theme.green : item.passRate >= 45 ? theme.purple : theme.amber}
+                            detail={`${item.passRate}% pass rate`}
+                            note={item.note}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {recentCheckpointVisuals.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>Recent learning checkpoints</div>
+                        {recentCheckpointVisuals.slice(0, 3).map((item) => (
+                          <CheckpointCard key={item.id} title={item.title} subtitle={item.subtitle} note={item.note} tone={item.tone} />
                         ))}
                       </div>
                     )}
@@ -2684,33 +2733,39 @@ function MentorAIDemoInner() {
                       </>
                     )}
 
-                    {effectiveFocusSkills.length > 0 && (
+                    {focusSkillVisuals.length > 0 && (
                       <>
                         <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
                           Focus skill map
                         </div>
-                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-                          {effectiveFocusSkills.slice(0, 4).map((item) => (
-                            <div key={item.skill}>
-                              &#10003; <strong>{item.skill}</strong>, {item.note}
-                            </div>
-                          ))}
-                        </div>
+                        {focusSkillVisuals.slice(0, 4).map((item) => (
+                          <InsightBar
+                            key={item.skill}
+                            label={item.skill}
+                            pct={item.pct}
+                            color={theme.amber}
+                            detail={`${item.occurrences} signals`}
+                            note={item.note}
+                          />
+                        ))}
                       </>
                     )}
 
-                    {effectivePracticeModes.length > 0 && (
+                    {practiceModeVisuals.length > 0 && (
                       <>
                         <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
                           Interventions that are landing
                         </div>
-                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-                          {effectivePracticeModes.slice(0, 3).map((item) => (
-                            <div key={item.mode}>
-                              &#10003; <strong>{item.mode}</strong>, {item.passRate}% pass rate across {item.attempts} tries
-                            </div>
-                          ))}
-                        </div>
+                        {practiceModeVisuals.slice(0, 3).map((item) => (
+                          <InsightBar
+                            key={item.mode}
+                            label={item.mode}
+                            pct={item.pct}
+                            color={item.passRate >= 70 ? theme.green : item.passRate >= 45 ? theme.purple : theme.amber}
+                            detail={`${item.passRate}% pass rate across ${item.attempts} tries`}
+                            note={item.note}
+                          />
+                        ))}
                       </>
                     )}
 
@@ -2722,6 +2777,17 @@ function MentorAIDemoInner() {
                         <div key={item}>&#10003; {item}</div>
                       ))}
                     </div>
+
+                    {recentCheckpointVisuals.length > 0 && (
+                      <>
+                        <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>
+                          Recent checkpoints
+                        </div>
+                        {recentCheckpointVisuals.map((item) => (
+                          <CheckpointCard key={item.id} title={item.title} subtitle={item.subtitle} note={item.note} tone={item.tone} />
+                        ))}
+                      </>
+                    )}
 
                     {nextSessionPlan.length > 0 && (
                       <>
@@ -3221,6 +3287,50 @@ function MetricCard({ label, value, tone = "muted", style }) {
     >
       <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 15, fontWeight: 600, color: toneColor }}>{value}</div>
+    </div>
+  );
+}
+
+function InsightBar({ label, pct, color, detail, note }) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${theme.border}`,
+        borderRadius: 10,
+        padding: "10px 12px",
+        background: "#fff",
+        marginBottom: 10,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{label}</div>
+        <div style={{ fontSize: 11, color: theme.textMuted, fontFamily: fontMono }}>{detail || `${pct}%`}</div>
+      </div>
+      <div style={{ height: 6, background: "#EFEEE7", borderRadius: 4, overflow: "hidden", marginBottom: note ? 6 : 0 }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4 }} />
+      </div>
+      {note && <div style={{ fontSize: 11, color: theme.textMuted, lineHeight: 1.55 }}>{note}</div>}
+    </div>
+  );
+}
+
+function CheckpointCard({ title, subtitle, note, tone = "muted" }) {
+  const borderColor = tone === "good" ? "#BCE4C8" : tone === "warn" ? "#EEDCB6" : theme.border;
+  const background = tone === "good" ? theme.greenSoft : tone === "warn" ? theme.amberSoft : "#fff";
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${borderColor}`,
+        borderRadius: 10,
+        padding: 12,
+        background,
+        marginBottom: 10,
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{title}</div>
+      {subtitle && <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: note ? 6 : 0 }}>{subtitle}</div>}
+      {note && <div style={{ fontSize: 12, lineHeight: 1.55 }}>{note}</div>}
     </div>
   );
 }
