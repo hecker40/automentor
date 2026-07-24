@@ -654,16 +654,7 @@ function VideoTileLabel({ children }) {
   );
 }
 
-function AITutorTile({ agentName, isSpeaking, status, transcript }) {
-  const statusLabel =
-    status === "loading"
-      ? "Thinking through the next move..."
-      : status === "error"
-        ? "Voice agent unavailable"
-        : isSpeaking
-          ? "Speaking now"
-          : "Ready to coach";
-
+function AITutorTile({ isSpeaking }) {
   return (
     <div
       style={{
@@ -671,23 +662,19 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
         borderRadius: 8,
         overflow: "hidden",
         aspectRatio: "4 / 3",
-        background: "radial-gradient(circle at 30% 20%, #312B63 0%, #191E33 44%, #0F1426 100%)",
-        border: "1px solid rgba(167, 146, 255, 0.35)",
+        background: "radial-gradient(circle at 50% 35%, #3E3490 0%, #241D59 34%, #141A2D 72%, #0F1426 100%)",
+        border: "1px solid rgba(167, 146, 255, 0.28)",
       }}
     >
       <style>{`
         @keyframes mentorai-wave {
-          0% { transform: translate(-50%, -50%) scale(0.86); opacity: 0.65; }
-          70% { transform: translate(-50%, -50%) scale(1.28); opacity: 0.16; }
-          100% { transform: translate(-50%, -50%) scale(1.46); opacity: 0; }
+          0% { transform: translate(-50%, -50%) scale(0.84); opacity: 0.58; }
+          72% { transform: translate(-50%, -50%) scale(1.26); opacity: 0.14; }
+          100% { transform: translate(-50%, -50%) scale(1.42); opacity: 0; }
         }
         @keyframes mentorai-breathe {
-          0%, 100% { transform: scale(1); }
-          50% { transform: scale(1.04); }
-        }
-        @keyframes mentorai-core-glow {
-          0%, 100% { box-shadow: 0 18px 42px rgba(108, 92, 231, 0.24), 0 0 0 0 rgba(167, 146, 255, 0.18); }
-          50% { box-shadow: 0 22px 48px rgba(108, 92, 231, 0.38), 0 0 0 10px rgba(167, 146, 255, 0.08); }
+          0%, 100% { transform: translate(-50%, -50%) scale(1); }
+          50% { transform: translate(-50%, -50%) scale(1.03); }
         }
       `}</style>
 
@@ -696,15 +683,11 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
           position: "absolute",
           inset: 0,
           display: "flex",
-          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          color: "#fff",
-          padding: 18,
-          textAlign: "center",
         }}
       >
-        <div style={{ position: "relative", width: 184, height: 184, marginBottom: 16 }}>
+        <div style={{ position: "relative", width: "78%", aspectRatio: "1 / 1" }}>
           {isSpeaking && [0, 1, 2, 3].map((index) => (
             <span
               key={index}
@@ -712,13 +695,13 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
                 position: "absolute",
                 top: "50%",
                 left: "50%",
-                width: 184,
-                height: 184,
+                width: "100%",
+                height: "100%",
                 borderRadius: "50%",
-                border: "2px solid rgba(167, 146, 255, 0.58)",
-                boxShadow: "0 0 26px rgba(108, 92, 231, 0.18)",
-                animation: "mentorai-wave 1.55s ease-out infinite",
-                animationDelay: `${index * 0.18}s`,
+                border: "2px solid rgba(190, 178, 255, 0.52)",
+                boxShadow: "0 0 24px rgba(140, 123, 255, 0.16)",
+                animation: "mentorai-wave 1.45s ease-out infinite",
+                animationDelay: `${index * 0.16}s`,
               }}
             />
           ))}
@@ -728,52 +711,31 @@ function AITutorTile({ agentName, isSpeaking, status, transcript }) {
               position: "absolute",
               top: "50%",
               left: "50%",
-              width: 142,
-              height: 142,
-              transform: "translate(-50%, -50%)",
+              width: "72%",
+              height: "72%",
               borderRadius: "50%",
-              background: "linear-gradient(145deg, #A792FF 0%, #7D6AF4 38%, #6C5CE7 68%, #4F3DD1 100%)",
+              transform: "translate(-50%, -50%)",
+              background: "linear-gradient(145deg, #B9A8FF 0%, #8F7CFF 36%, #6C5CE7 70%, #5543D3 100%)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: "0 18px 42px rgba(108, 92, 231, 0.24)",
-              animation: isSpeaking ? "mentorai-breathe 0.95s ease-in-out infinite, mentorai-core-glow 1.1s ease-in-out infinite" : "none",
+              boxShadow: "0 20px 50px rgba(108, 92, 231, 0.34)",
+              animation: isSpeaking ? "mentorai-breathe 0.95s ease-in-out infinite" : "none",
             }}
           >
-            <div
-              style={{
-                fontSize: 48,
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                fontFamily: fontDisplay,
-                color: "#FFFFFF",
-              }}
-            >
-              AI
-            </div>
+            <User
+              size={110}
+              strokeWidth={1.75}
+              color="rgba(255,255,255,0.96)"
+            />
           </div>
         </div>
-
-        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{agentName}</div>
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.72)", marginBottom: 10 }}>{statusLabel}</div>
-        <div
-          style={{
-            maxWidth: 240,
-            fontSize: 12,
-            lineHeight: 1.55,
-            color: "rgba(255,255,255,0.86)",
-          }}
-        >
-          {transcript || "The AI tutor will speak out loud after a student question or a fresh analysis checkpoint."}
-        </div>
       </div>
-
-      <VideoTileLabel>{agentName}</VideoTileLabel>
     </div>
   );
 }
 
-function LiveCallLayout({ studentName, aiSpeaking, aiStatus, aiTranscript }) {
+function LiveCallLayout({ studentName, aiSpeaking }) {
   const { useCallCallingState, useParticipants } = useCallStateHooks();
   const callingState = useCallCallingState();
   const participants = useParticipants();
@@ -822,10 +784,7 @@ function LiveCallLayout({ studentName, aiSpeaking, aiStatus, aiTranscript }) {
           </div>
 
           <AITutorTile
-            agentName="AI Tutor"
             isSpeaking={aiSpeaking}
-            status={aiStatus}
-            transcript={aiTranscript}
           />
         </div>
         {callingState === CallingState.JOINED ? (
@@ -2189,8 +2148,6 @@ function MentorAIDemoInner() {
             <LiveCallLayout
               studentName={displayStudentName}
               aiSpeaking={aiTutorSpeaking}
-              aiStatus={aiTutorStatus}
-              aiTranscript={aiTutorReply?.text || ""}
             />
           </Panel>
 
@@ -2628,8 +2585,8 @@ function MentorAIDemoInner() {
                   )}
                   <div
                     style={{
-                      background: insightCardTone.surface,
-                      border: `1px solid ${insightCardTone.border}`,
+                      background: "#fff",
+                      border: `1px solid ${theme.border}`,
                       borderRadius: 8,
                       padding: "10px 12px",
                       fontSize: 13,
@@ -2673,8 +2630,8 @@ function MentorAIDemoInner() {
                       </div>
                       <div
                         style={{
-                          background: insightCardTone.surface,
-                          border: `1px solid ${insightCardTone.border}`,
+                          background: "#fff",
+                          border: `1px solid ${theme.border}`,
                           borderRadius: 8,
                           padding: "10px 12px",
                         }}
