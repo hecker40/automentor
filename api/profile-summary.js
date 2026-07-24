@@ -58,8 +58,12 @@ function normalizeMessages(messages = []) {
     : [];
 }
 
+function getLatestAnalyzedSession(sessions = []) {
+  return [...sessions].reverse().find((session) => Array.isArray(session?.analyses) && session.analyses.length) || null;
+}
+
 function buildConversationSignals(sessions = []) {
-  const latestSession = sessions[sessions.length - 1] || null;
+  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
   const messages = normalizeMessages(latestSession?.messages || []);
   if (!messages.length) return [];
 
@@ -87,10 +91,10 @@ function buildConversationSignals(sessions = []) {
 }
 
 function buildLatestLessonRecap(studentName, sessions = [], subjectStats = []) {
-  const latestSession = sessions[sessions.length - 1] || null;
+  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
   const latestAnalysis = latestSession?.analyses?.[latestSession.analyses.length - 1] || null;
-  const subject = latestSession?.subject || subjectStats[0]?.subject || "the current topic";
-  const problem = String(latestSession?.problem || latestAnalysis?.problem || "this problem").trim() || "this problem";
+  const subject = latestAnalysis?.subject || latestSession?.subject || subjectStats[0]?.subject || "the current topic";
+  const problem = String(latestAnalysis?.problem || latestSession?.problem || "this problem").trim() || "this problem";
   const misconception = latestAnalysis?.misconception || "the main focus area";
 
   return `${studentName} worked through ${problem} in ${String(subject).toLowerCase()}, with the session focused on clarifying ${String(
@@ -99,9 +103,9 @@ function buildLatestLessonRecap(studentName, sessions = [], subjectStats = []) {
 }
 
 function buildReviewVideoBrief(studentName, sessions = [], subjectStats = []) {
-  const latestSession = sessions[sessions.length - 1] || null;
+  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
   const latestAnalysis = latestSession?.analyses?.[latestSession.analyses.length - 1] || null;
-  const problem = String(latestSession?.problem || latestAnalysis?.problem || "the lesson problem").trim() || "the lesson problem";
+  const problem = String(latestAnalysis?.problem || latestSession?.problem || "the lesson problem").trim() || "the lesson problem";
   const misconception = latestAnalysis?.misconception || subjectStats[0]?.topMisconception || "the main concept";
   const strength = latestAnalysis?.strengths?.[0] || subjectStats[0]?.topStrength || "staying engaged with the problem";
 

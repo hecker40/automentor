@@ -282,8 +282,12 @@ function normalizeStoredAssignment(assignment) {
   };
 }
 
+function getLatestAnalyzedSession(sessions = []) {
+  return [...sessions].reverse().find((session) => Array.isArray(session?.analyses) && session.analyses.length) || null;
+}
+
 function buildConversationSignalsFromSessions(sessions = []) {
-  const latestSession = sessions[sessions.length - 1] || null;
+  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
   const messages = normalizeStoredMessages(latestSession?.messages || []);
   if (!messages.length) return [];
 
@@ -312,19 +316,19 @@ function buildConversationSignalsFromSessions(sessions = []) {
 }
 
 function buildLatestLessonRecap(studentName, sessions = [], stats) {
-  const latestSession = sessions[sessions.length - 1] || null;
+  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
   const latestAnalysis = stats?.latestObservation?.analysis || latestSession?.analyses?.[latestSession.analyses.length - 1]?.analysis;
-  const subject = normalizeLabel(latestSession?.subject || stats?.supportSubject?.subject, "the current topic");
-  const problem = String(latestSession?.problem || stats?.latestObservation?.problem || "this problem").trim() || "this problem";
+  const subject = normalizeLabel(latestAnalysis?.subject || latestSession?.subject || stats?.supportSubject?.subject, "the current topic");
+  const problem = String(stats?.latestObservation?.problem || latestAnalysis?.problem || latestSession?.problem || "this problem").trim() || "this problem";
   const misconception = latestAnalysis?.misconception || stats?.topMisconceptions?.[0]?.label || "the current concept";
 
   return `${studentName} worked on ${subject.toLowerCase()} through ${problem}. The main tutoring focus was ${misconception.toLowerCase()}, with the session moving toward a clearer step-by-step solution.`;
 }
 
 function buildFallbackVideoBrief(studentName, sessions = [], stats) {
-  const latestSession = sessions[sessions.length - 1] || null;
+  const latestSession = getLatestAnalyzedSession(sessions) || sessions[sessions.length - 1] || null;
   const latestAnalysis = stats?.latestObservation?.analysis || latestSession?.analyses?.[latestSession.analyses.length - 1]?.analysis;
-  const problem = String(latestSession?.problem || stats?.latestObservation?.problem || "the lesson problem").trim() || "the lesson problem";
+  const problem = String(stats?.latestObservation?.problem || latestAnalysis?.problem || latestSession?.problem || "the lesson problem").trim() || "the lesson problem";
   const misconception = latestAnalysis?.misconception || stats?.topMisconceptions?.[0]?.label || "the main focus area";
   const strength = stats?.topStrengths?.[0]?.label || latestAnalysis?.strengths?.[0] || "staying engaged with the problem";
 
@@ -423,6 +427,7 @@ function buildStudentAnalytics(store, studentName) {
     studentKey,
     sessions,
     observations,
+    analysisFingerprint: observations.map((entry) => `${entry.id || "analysis"}:${entry.createdAt || ""}`).join("||"),
     totalSessions: sessions.length,
     totalAnalyses: observations.length,
     averageConfidencePct: clampPercent(average(confidenceValues) * 100),
@@ -1248,19 +1253,11 @@ function useStudentProfileAnalytics(studentName) {
   const [profileError, setProfileError] = useState("");
 
   const studentStats = buildStudentAnalytics(analyticsStore, studentName);
-  const profileFingerprint = studentStats.sessions
-    .map((session) => {
-      const latestAssignment = session?.currentAssignment || (session?.reviewAssignments || []).slice(-1)[0];
-      return [
-        session?.sessionId,
-        session?.analyses?.length || 0,
-        session?.messages?.length || 0,
-        session?.reviewAssignments?.length || 0,
-        session?.suggestedPrompts?.length || 0,
-        latestAssignment?.updatedAt || 0,
-      ].join(":");
-    })
-    .join("||");
+  const studentStatsRef = useRef(studentStats);
+
+  useEffect(() => {
+    studentStatsRef.current = studentStats;
+  }, [studentStats]);
 
   const updateSessionRecord = useCallback((prev, activeStudentName, subject, mutate) => {
     const createdAt = new Date().toISOString();
@@ -1339,8 +1336,10 @@ function useStudentProfileAnalytics(studentName) {
     return () => window.removeEventListener("storage", handleStorage);
   }, [studentKey]);
 
-  const refreshProfile = useCallback(async (snapshot = studentStats) => {
-    if (!snapshot.totalAnalyses) {
+  const refreshProfile = useCallback(async (snapshot) => {
+    const targetSnapshot = snapshot || studentStatsRef.current;
+
+    if (!targetSnapshot.totalAnalyses) {
       setProfileStatus("idle");
       return;
     }
@@ -1354,8 +1353,8 @@ function useStudentProfileAnalytics(studentName) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           studentName,
-          sessions: snapshot.sessions,
-          subjectStats: snapshot.subjectStats,
+          sessions: targetSnapshot.sessions,
+          subjectStats: targetSnapshot.subjectStats,
         }),
       });
 
@@ -1372,16 +1371,19 @@ function useStudentProfileAnalytics(studentName) {
       setProfileError(error instanceof Error ? error.message : "Profile summary failed");
       setProfileStatus("error");
     }
-  }, [studentKey, studentName, studentStats]);
+  }, [studentKey, studentName]);
+
+  const analysisCount = studentStats.totalAnalyses;
+  const analysisFingerprint = studentStats.analysisFingerprint;
 
   useEffect(() => {
-    if (!studentStats.totalAnalyses) return;
+    if (!analysisCount) return;
     const timeout = window.setTimeout(() => {
-      refreshProfile(studentStats);
+      refreshProfile(studentStatsRef.current);
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [studentKey, profileFingerprint, refreshProfile, studentStats]);
+  }, [studentKey, analysisCount, analysisFingerprint, refreshProfile]);
 
   const syncSessionContext = useCallback(({ studentName: activeStudentName, subject, problem, messages, assignment }) => {
     setAnalyticsStore((prev) =>
@@ -2426,6 +2428,21 @@ function MentorAIDemoInner() {
                   />
                 </div>
 
+                <div
+                  style={{
+                    marginBottom: 14,
+                    background: "#F7F6F1",
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: 8,
+                    padding: 12,
+                    fontSize: 12,
+                    color: theme.textMuted,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  MentorAI updates its long-term student model when you save a new analysis checkpoint. Live typing, chat, and whiteboard edits do not refresh the profile on their own.
+                </div>
+
                 {studentStats.totalAnalyses === 0 ? (
                   <EmptyStateCard text="Run “Analyze my work” to start building persistent insights for this student." />
                 ) : (
@@ -2559,6 +2576,9 @@ function MentorAIDemoInner() {
                       <div style={{ fontWeight: 600, fontSize: 14 }}>{displayStudentName}</div>
                       <div style={{ fontSize: 12, color: theme.textMuted }}>
                         {studentStats.totalSessions} sessions logged &middot; {studentStats.totalAnalyses} analyses
+                      </div>
+                      <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 2 }}>
+                        Profile learning updates on saved analyses.
                       </div>
                     </div>
                   </div>
