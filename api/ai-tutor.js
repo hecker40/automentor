@@ -73,10 +73,11 @@ function buildFallbackTutorText({ studentName, subject, problem, studentMessage,
   const misconception = cleanText(analysis?.misconception);
   const explanation = cleanText(analysis?.explanation);
   const nextQuestion = cleanText(analysis?.suggestedQuestion);
+  const specificMishap = cleanText(analysis?.specificMishap);
   const focusPrompt = cleanText(problem || studentMessage || latestLessonRecap, "the next step");
 
   if (misconception && explanation) {
-    return `Alright ${safeStudent}, let’s slow this down. In ${safeSubject.toLowerCase()}, the main thing to fix is ${misconception.toLowerCase()}. ${explanation} Try this next: ${nextQuestion || `walk me through ${focusPrompt}`}`;
+    return `Alright ${safeStudent}, let’s slow this down. In ${safeSubject.toLowerCase()}, the main thing to fix is ${specificMishap || misconception.toLowerCase()}. ${explanation} Try this next: ${nextQuestion || `walk me through ${focusPrompt}`}`;
   }
 
   return `Alright ${safeStudent}, let’s work through ${focusPrompt}. I want you to say the next step out loud, and I’ll help you check it as you go.`;
@@ -214,6 +215,7 @@ async function generateTutorText({
   latestLessonRecap,
   focusSkills,
   effectivePracticeModes,
+  strategyProfiles,
   targetedPractice,
   strengths,
 }) {
@@ -228,6 +230,8 @@ async function generateTutorText({
     "You are MentorAI, a calm and sharp AI tutor speaking directly to a student in a live session.",
     "Write exactly one concise spoken reply for the AI tutor to say out loud right now.",
     "Use the student context, latest analysis, and saved profile signals to choose the next teaching move.",
+    "Be specific about the exact mishap or missing step instead of giving generic encouragement.",
+    "Prefer a teaching move that has helped this learner before when the strategy history supports it.",
     "Do not mention profiles, analytics, checkpoints, hidden signals, memory systems, or that you are using OpenAI.",
     "Do not sound theatrical. Do not overpraise. Be natural, direct, and supportive.",
     "If the student has a given name, you may address them by name naturally.",
@@ -245,6 +249,7 @@ async function generateTutorText({
     `Latest lesson recap: ${cleanText(latestLessonRecap, "None")}`,
     `Focus skills: ${JSON.stringify(focusSkills || [])}`,
     `Practice modes that have worked: ${JSON.stringify(effectivePracticeModes || [])}`,
+    `Teaching strategies that have worked: ${JSON.stringify(strategyProfiles || [])}`,
     `Targeted practice options: ${JSON.stringify(targetedPractice || [])}`,
     `Observed strengths: ${JSON.stringify(strengths || [])}`,
   ].join("\n");
@@ -379,6 +384,7 @@ export default async function handler(req, res) {
   const analysis = body?.analysis && typeof body.analysis === "object" ? body.analysis : null;
   const focusSkills = compactList(body?.focusSkills || [], 3);
   const effectivePracticeModes = compactList(body?.effectivePracticeModes || [], 3);
+  const strategyProfiles = Array.isArray(body?.strategyProfiles) ? body.strategyProfiles.slice(0, 4) : [];
   const targetedPractice = compactList(body?.targetedPractice || [], 3);
   const strengths = compactList(body?.strengths || [], 3);
   const directText = cleanText(body?.directText);
@@ -401,6 +407,7 @@ export default async function handler(req, res) {
           latestLessonRecap,
           focusSkills,
           effectivePracticeModes,
+          strategyProfiles,
           targetedPractice,
           strengths,
         });

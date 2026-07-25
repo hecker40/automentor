@@ -311,6 +311,56 @@ export function summarizeAssignmentResults(sessions = []) {
     .slice(0, 4);
 }
 
+export function summarizeStrategyResults(sessions = []) {
+  const strategyMap = new Map();
+
+  sessions.forEach((session) => {
+    (session?.reviewAssignments || []).forEach((assignment) => {
+      (assignment?.items || []).forEach((item) => {
+        const grade = assignment?.grades?.[item?.id];
+        if (grade !== "pass" && grade !== "retry") return;
+
+        const label = normalizeLabel(item?.strategyLabel || assignment?.strategyLabel, "direct coaching");
+        const current = strategyMap.get(label) || {
+          label,
+          attempts: 0,
+          passes: 0,
+          notes: [],
+          coachMoves: [],
+        };
+
+        current.attempts += 1;
+        current.passes += grade === "pass" ? 1 : 0;
+
+        if (item?.strategyReason) current.notes.push(String(item.strategyReason));
+        if (item?.coachNote) current.coachMoves.push(String(item.coachNote));
+
+        strategyMap.set(label, current);
+      });
+    });
+  });
+
+  return [...strategyMap.values()]
+    .map((entry) => {
+      const passRate = clampPercent((entry.passes / Math.max(entry.attempts, 1)) * 100);
+      return {
+        label: entry.label,
+        attempts: entry.attempts,
+        passRate,
+        note:
+          passRate >= 70
+            ? `${entry.label} is landing well for this learner.`
+            : passRate >= 45
+              ? `${entry.label} is somewhat helpful, but still needs tightening.`
+              : `${entry.label} has not been converting well yet.`,
+        coachMove: uniqueStrings(entry.coachMoves, 1)[0] || "Keep the move brief and tied to the visible mistake.",
+        rationale: uniqueStrings(entry.notes, 1)[0] || "Tracked from recent pass and retry outcomes.",
+      };
+    })
+    .sort((a, b) => b.passRate - a.passRate || b.attempts - a.attempts || a.label.localeCompare(b.label))
+    .slice(0, 5);
+}
+
 export function buildAdaptiveProfile({
   studentName = "Student",
   sessions = [],
@@ -347,6 +397,7 @@ export function buildAdaptiveProfile({
     }));
 
   const effectivePracticeModes = summarizeAssignmentResults(sessions);
+  const strategyProfiles = summarizeStrategyResults(sessions);
   const latestAnalysis = latestObservation?.analysis || latestObservation || {};
   const learningStyle = uniqueStrings(
     [
@@ -357,6 +408,9 @@ export function buildAdaptiveProfile({
       effectivePracticeModes[0]
         ? `${effectivePracticeModes[0].mode} practice currently works best`
         : "Still learning which practice mode works best",
+      strategyProfiles[0]
+        ? `${strategyProfiles[0].label} has produced the strongest recent response`
+        : "Still learning which teaching move lands best",
     ],
     3
   );
@@ -377,18 +431,24 @@ export function buildAdaptiveProfile({
       effectivePracticeModes[0]
         ? `End with a short ${effectivePracticeModes[0].mode.toLowerCase()} task because it has shown the best response so far.`
         : "End with one independent transfer problem to see if the correction sticks.",
+      strategyProfiles[0]
+        ? `Lean on ${strategyProfiles[0].label.toLowerCase()} when the same mistake reappears because it currently shows the best recovery rate.`
+        : "Keep testing small teaching moves and retain the one that clears the mistake fastest.",
     ],
-    3
+    4
   );
 
-  const evolutionLoop = effectivePracticeModes.length
-    ? "MentorAI is not only spotting errors, it is checking which intervention types lead to passes versus retries and shifting the next practice set accordingly."
-    : "MentorAI updates the student's focus-skill map after each analysis so the next session starts from the last known sticking point instead of from zero.";
+  const evolutionLoop = strategyProfiles.length
+    ? "MentorAI is not only spotting errors, it is checking which teaching moves lead to passes versus retries and shifting the next intervention toward the moves that clear the mistake more reliably."
+    : effectivePracticeModes.length
+      ? "MentorAI is not only spotting errors, it is checking which intervention types lead to passes versus retries and shifting the next practice set accordingly."
+      : "MentorAI updates the student's focus-skill map after each analysis so the next session starts from the last known sticking point instead of from zero.";
 
   return {
     adaptationSummary,
     focusSkills,
     effectivePracticeModes,
+    strategyProfiles,
     learningStyle,
     nextSessionPlan,
     evolutionLoop,

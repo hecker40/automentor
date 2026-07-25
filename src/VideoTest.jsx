@@ -281,6 +281,8 @@ function normalizeStoredAssignment(assignment) {
         kind: normalizeLabel(item?.kind, "Review"),
         prompt: String(item?.prompt || "").trim().slice(0, 320),
         coachNote: String(item?.coachNote || "").trim().slice(0, 220),
+        strategyLabel: normalizeLabel(item?.strategyLabel, "direct coaching"),
+        strategyReason: String(item?.strategyReason || "").trim().slice(0, 220),
       }))
     : [];
 
@@ -317,6 +319,8 @@ function normalizeStoredAssignment(assignment) {
     id: assignment?.id || `assignment-${Date.now()}`,
     title: String(assignment?.title || "Suggested review").trim().slice(0, 120),
     summary: String(assignment?.summary || "").trim().slice(0, 220),
+    strategyLabel: normalizeLabel(assignment?.strategyLabel, "direct coaching"),
+    strategyReason: String(assignment?.strategyReason || "").trim().slice(0, 220),
     createdAt: assignment?.createdAt || new Date().toISOString(),
     updatedAt: Number(assignment?.updatedAt || Date.now()),
     learningPath: Array.isArray(assignment?.learningPath)
@@ -1035,7 +1039,7 @@ function useSharedAnalysis() {
   return { analysis, analysisStatus, analysisError, broadcastLoading, broadcastSuccess, broadcastError };
 }
 
-function buildSuggestedReviewAssignment({ analysis, subject, studentName, problem }) {
+function buildSuggestedReviewAssignment({ analysis, subject, studentName, problem, strategy }) {
   const safeSubject = normalizeLabel(subject, "Subject");
   const safeStudent = normalizeLabel(studentName, "Student");
   const skillBreakdown = Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
@@ -1062,11 +1066,22 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
     (problem
       ? `Redo this style of problem and narrate the ${topSkill.toLowerCase()} step clearly: ${problem}`
       : `Work one short ${safeSubject.toLowerCase()} example that uses ${topSkill.toLowerCase()} and show each step clearly.`);
+  const chosenStrategy = strategy || analysis?.selectedStrategy || null;
+  const strategyLabel = normalizeLabel(chosenStrategy?.label, topSkill);
+  const strategyReason = String(
+    chosenStrategy?.reason ||
+    chosenStrategy?.rationale ||
+    analysis?.specificMishap ||
+    analysis?.missingOrIncorrectSteps?.[0] ||
+    "Chosen from the latest checkpoint."
+  ).trim();
 
   return {
     id: `review-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title: `${topSkill} suggested review`,
     summary: `Built from ${safeStudent}'s latest ${topSkill.toLowerCase()} checkpoint.`,
+    strategyLabel,
+    strategyReason,
     createdAt: new Date().toISOString(),
     updatedAt: Date.now(),
     learningPath,
@@ -1075,6 +1090,8 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
         id: "review",
         kind: "Review",
         prompt: `In your own words, explain how to handle the ${topSkill.toLowerCase()} step in this kind of problem.`,
+        strategyLabel,
+        strategyReason,
         coachNote:
           skillBreakdown[0]?.tutorMove ||
           "Listen for whether the student can restate the concept without copying the prompt.",
@@ -1083,6 +1100,8 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
         id: "quiz",
         kind: "Quiz",
         prompt: quickCheck,
+        strategyLabel,
+        strategyReason,
         coachNote:
           targetedPractice[0]?.reason ||
           `Use this to check whether the confusion around ${misconception.toLowerCase()} is clearing up.`,
@@ -1091,6 +1110,8 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
         id: "exercise",
         kind: "Exercise",
         prompt: practicePrompt,
+        strategyLabel,
+        strategyReason,
         coachNote:
           targetedPractice[1]?.reason ||
           "Look for accurate steps, pacing, and whether the student can explain why each step works.",
@@ -1101,7 +1122,7 @@ function buildSuggestedReviewAssignment({ analysis, subject, studentName, proble
   };
 }
 
-function buildDemoStrategyCandidates({ analysis, subject, studentName, problem }) {
+function buildDemoStrategyCandidates({ analysis, subject, studentName, problem, strategyProfiles = [] }) {
   const safeSubject = normalizeLabel(subject, "this topic");
   const safeStudent = normalizeLabel(studentName, "Student");
   const skillBreakdown = Array.isArray(analysis?.skillBreakdown) && analysis.skillBreakdown.length
@@ -1113,32 +1134,90 @@ function buildDemoStrategyCandidates({ analysis, subject, studentName, problem }
         analysis: { ...analysis, skillBreakdown },
         problem,
         subject: safeSubject,
-        studentName: safeStudent,
+      studentName: safeStudent,
       });
   const topSkill = skillBreakdown[0]?.skill || analysis?.misconception || safeSubject;
+  const specificMishap = String(
+    analysis?.specificMishap ||
+    analysis?.missingOrIncorrectSteps?.[0] ||
+    skillBreakdown[0]?.evidence ||
+    analysis?.explanation ||
+    topSkill
+  ).trim();
   const firstPathStep = Array.isArray(analysis?.learningPath) && analysis.learningPath.length
     ? analysis.learningPath[0]
     : `slow down the ${String(topSkill).toLowerCase()} step`;
   const quickPrompt = targetedPractice[0]?.prompt || analysis?.suggestedQuestion || `Explain how you would handle ${String(topSkill).toLowerCase()}.`;
   const exercisePrompt = targetedPractice[1]?.prompt || problem || `Try one more ${safeSubject.toLowerCase()} example.`;
 
-  return [
+  const llmCandidates = Array.isArray(analysis?.strategyCandidates)
+    ? analysis.strategyCandidates.slice(0, 4).map((item, index) => ({
+        id: item?.label ? slugifyStudentName(item.label) : `strategy-${index}`,
+        label: normalizeLabel(item?.label, `strategy ${index + 1}`),
+        rationale: String(item?.rationale || item?.reason || `Targets ${specificMishap}.`).trim(),
+        tutorMove: String(item?.tutorMove || skillBreakdown[0]?.tutorMove || "Keep the next move tied to the visible mistake.").trim(),
+        chatText: String(item?.chatText || item?.tutorLine || item?.spokenLine || "").trim(),
+      }))
+    : [];
+
+  const heuristicCandidates = [
     {
-      id: "quick-check",
-      label: "quick check",
-      chatText: `I want to test a quick-check strategy first. ${quickPrompt}`,
+      id: "error-isolation",
+      label: "error isolation",
+      rationale: `Targets the exact mishap: ${specificMishap}`,
+      tutorMove: skillBreakdown[0]?.tutorMove || `Isolate the ${String(topSkill).toLowerCase()} step before simplifying further.`,
+      chatText: `Let's isolate the exact snag first. I can see the trouble around ${specificMishap}. ${quickPrompt}`,
     },
     {
       id: "worked-example",
       label: "worked example",
-      chatText: `I want to try a worked-example strategy. We will ${firstPathStep.charAt(0).toLowerCase()}${firstPathStep.slice(1)} one step at a time.`,
+      rationale: `Rebuilds the process one step at a time around ${String(topSkill).toLowerCase()}.`,
+      tutorMove: `Model one clean step, then have ${safeStudent} explain the next one.`,
+      chatText: `Let's rebuild this with one clean example. We will ${firstPathStep.charAt(0).toLowerCase()}${firstPathStep.slice(1)} one step at a time.`,
+    },
+    {
+      id: "retrieval-check",
+      label: "retrieval check",
+      rationale: `Checks whether ${safeStudent} can name the next move without being carried.`,
+      tutorMove: `Ask for the next step first, then correct only the exact miss.`,
+      chatText: `Before I step in too much, tell me the very next move. ${quickPrompt}`,
     },
     {
       id: "transfer-practice",
       label: "transfer practice",
-      chatText: `I want to test a transfer strategy next. Apply the same idea here: ${exercisePrompt}`,
+      rationale: `Tests whether the fix sticks on a fresh but related example.`,
+      tutorMove: `Shift to a similar problem and check whether the same mistake returns.`,
+      chatText: `Now let's test whether the fix sticks. Apply the same idea here: ${exercisePrompt}`,
     },
   ].filter((item) => String(item.chatText || "").trim());
+
+  const candidates = [...llmCandidates, ...heuristicCandidates].filter((item, index, all) => {
+    const label = String(item?.label || "").trim().toLowerCase();
+    if (!label) return false;
+    return all.findIndex((candidate) => String(candidate?.label || "").trim().toLowerCase() === label) === index;
+  });
+
+  const profileByLabel = new Map(
+    strategyProfiles.map((item) => [String(item?.label || "").toLowerCase(), item])
+  );
+
+  return candidates
+    .map((candidate) => {
+      const profile = profileByLabel.get(candidate.label.toLowerCase());
+      return {
+        ...candidate,
+        priorPassRate: Number(profile?.passRate || 0),
+        priorAttempts: Number(profile?.attempts || 0),
+        priorNote: profile?.note || "",
+      };
+    })
+    .sort((a, b) => b.priorPassRate - a.priorPassRate || b.priorAttempts - a.priorAttempts || a.label.localeCompare(b.label));
+}
+
+function chooseStrategyCandidate(candidates = []) {
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  const bestKnown = candidates.find((item) => Number(item.priorAttempts || 0) > 0);
+  return bestKnown || candidates[0] || null;
 }
 
 function getReviewGradeTone(grade) {
@@ -1510,6 +1589,7 @@ function useStudentProfileAnalytics(studentName) {
         analysis?.confidence,
         Boolean(analysis?.misconception || analysis?.explanation || analysis?.suggestedQuestion)
       ),
+      specificMishap: String(analysis?.specificMishap || "").trim().slice(0, 220),
       learningPath: Array.isArray(analysis?.learningPath) ? analysis.learningPath.slice(0, 3) : [],
       skillBreakdown: Array.isArray(analysis?.skillBreakdown)
         ? analysis.skillBreakdown.slice(0, 4).map((item, index) => ({
@@ -1526,6 +1606,22 @@ function useStudentProfileAnalytics(studentName) {
             reason: String(item?.reason || "Chosen from the student's recent work.").trim().slice(0, 220),
           }))
         : [],
+      strategyCandidates: Array.isArray(analysis?.strategyCandidates)
+        ? analysis.strategyCandidates.slice(0, 4).map((item, index) => ({
+            label: normalizeLabel(item?.label, `Strategy ${index + 1}`),
+            rationale: String(item?.rationale || item?.reason || "Chosen from the latest checkpoint.").trim().slice(0, 220),
+            tutorMove: String(item?.tutorMove || "Keep the next move tied to the visible mistake.").trim().slice(0, 220),
+            chatText: String(item?.chatText || item?.tutorLine || "").trim().slice(0, 240),
+          }))
+        : [],
+      selectedStrategy: analysis?.selectedStrategy
+        ? {
+            label: normalizeLabel(analysis.selectedStrategy?.label, "direct coaching"),
+            rationale: String(analysis.selectedStrategy?.rationale || analysis.selectedStrategy?.reason || "Chosen from the latest checkpoint.").trim().slice(0, 220),
+            tutorMove: String(analysis.selectedStrategy?.tutorMove || "Keep the next move tied to the visible mistake.").trim().slice(0, 220),
+            chatText: String(analysis.selectedStrategy?.chatText || analysis.selectedStrategy?.tutorLine || "").trim().slice(0, 240),
+          }
+        : null,
       adaptationNote: String(analysis?.adaptationNote || "").trim().slice(0, 240),
     };
 
@@ -1861,6 +1957,9 @@ function MentorAIDemoInner() {
   const effectivePracticeModes = (effectiveProfile.effectivePracticeModes || []).length
     ? effectiveProfile.effectivePracticeModes
     : adaptiveProfile.effectivePracticeModes;
+  const effectiveStrategyProfiles = (effectiveProfile.strategyProfiles || []).length
+    ? effectiveProfile.strategyProfiles
+    : adaptiveProfile.strategyProfiles || [];
   const nextSessionPlan = (effectiveProfile.nextSessionPlan || []).length
     ? effectiveProfile.nextSessionPlan
     : adaptiveProfile.nextSessionPlan;
@@ -1995,6 +2094,7 @@ function MentorAIDemoInner() {
           latestLessonRecap: effectiveProfile.latestLessonRecap,
           focusSkills: effectiveFocusSkills.slice(0, 3),
           effectivePracticeModes: effectivePracticeModes.slice(0, 3),
+          strategyProfiles: effectiveStrategyProfiles.slice(0, 4),
           targetedPractice: (latestTargetedPractice.length ? latestTargetedPractice : currentTargetedPractice).slice(0, 3),
           strengths: (effectiveProfile.strengths || studentStats.topStrengths.map((item) => item.label)).slice(0, 3),
       });
@@ -2046,12 +2146,22 @@ function MentorAIDemoInner() {
   const handleAssignSuggestedReview = () => {
     if (!assignmentSourceAnalysis) return;
 
+    const strategyOptions = buildDemoStrategyCandidates({
+      analysis: assignmentSourceAnalysis,
+      subject: displaySubject,
+      studentName: displayStudentName,
+      problem: assignmentSourceProblem,
+      strategyProfiles: effectiveStrategyProfiles,
+    });
+    const selectedStrategy = chooseStrategyCandidate(strategyOptions);
+
     const nextAssignment = buildSuggestedReviewAssignment({
-        analysis: assignmentSourceAnalysis,
-        subject: displaySubject,
-        studentName: displayStudentName,
-        problem: assignmentSourceProblem,
-      });
+      analysis: assignmentSourceAnalysis,
+      subject: displaySubject,
+      studentName: displayStudentName,
+      problem: assignmentSourceProblem,
+      strategy: selectedStrategy,
+    });
 
     announceQuizAssignment(nextAssignment).catch(() => {
       setAiTutorStatus("error");
@@ -2150,18 +2260,20 @@ function MentorAIDemoInner() {
         subject: displaySubject,
         studentName: displayStudentName,
         problem,
+        strategyProfiles: effectiveStrategyProfiles,
       });
+      const selectedStrategy = chooseStrategyCandidate(strategyOptions);
       const nextAssignment = buildSuggestedReviewAssignment({
         analysis: payload,
         subject: displaySubject,
         studentName: displayStudentName,
         problem,
+        strategy: selectedStrategy,
       });
 
       pendingQuizAssignmentRef.current = nextAssignment;
 
-      if (strategyOptions.length) {
-        const selectedStrategy = strategyOptions[studentStats.totalAnalyses % strategyOptions.length];
+      if (selectedStrategy) {
         await speakDirectTutorText(selectedStrategy.chatText, {
           postToChat: true,
           teachingFocus: selectedStrategy.label,

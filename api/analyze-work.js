@@ -27,6 +27,9 @@ const fallbackAnalysis = {
   observedOperations: [],
   missingOrIncorrectSteps: [],
   result: "unclear",
+  specificMishap: "",
+  strategyCandidates: [],
+  selectedStrategy: null,
 };
 
 function sendJson(res, status, payload) {
@@ -112,6 +115,23 @@ function trimSentenceSpacing(text = "") {
   return cleanText(text).replace(/\s+/g, " ");
 }
 
+function normalizeStrategyCandidate(value, index = 0) {
+  if (!value || typeof value !== "object") return null;
+
+  return {
+    label: cleanText(value?.label, index === 0 ? "error isolation" : `strategy ${index + 1}`),
+    rationale: cleanText(value?.rationale || value?.reason, "Chosen from the live mistake pattern."),
+    tutorMove: cleanText(value?.tutorMove, "Use one direct move tied to the exact visible mistake."),
+    chatText: cleanText(value?.chatText || value?.tutorLine || value?.spokenLine, ""),
+  };
+}
+
+function normalizeStrategyList(values = []) {
+  return Array.isArray(values)
+    ? values.map((value, index) => normalizeStrategyCandidate(value, index)).filter(Boolean).slice(0, 4)
+    : [];
+}
+
 function enforceLiveEvidence(analysis, context = {}) {
   const observedWork = cleanText(analysis?.observedWork);
   const observedSteps = cleanList(analysis?.observedSteps, 4);
@@ -166,6 +186,7 @@ function enforceLiveEvidence(analysis, context = {}) {
       explanation: /distributed correctly|correctly distributed|distribution correctly/i.test(next.explanation)
         ? "The live board does not clearly show a completed distribution step yet, so MentorAI should treat that step as missing or unfinished instead of correct."
         : next.explanation,
+      specificMishap: cleanText(next.specificMishap, "The distribution step is missing or unfinished on the live board."),
       strengths: (next.strengths || []).filter((item) => !/distribut|expand/i.test(item)),
       skillBreakdown: [
         {
@@ -215,6 +236,10 @@ function cleanAnalysis(value, context = {}) {
     observedOperations,
     missingOrIncorrectSteps,
     result,
+    specificMishap: cleanText(
+      value?.specificMishap,
+      missingOrIncorrectSteps[0] || observedSteps[0] || cleanText(value?.misconception)
+    ),
   };
 
   const heuristicBreakdown = buildSkillBreakdown({
@@ -232,12 +257,16 @@ function cleanAnalysis(value, context = {}) {
       studentName: context.studentName,
     })
   );
+  const strategyCandidates = normalizeStrategyList(value?.strategyCandidates);
+  const selectedStrategy = normalizeStrategyCandidate(value?.selectedStrategy || strategyCandidates[0], 0);
 
   return enforceLiveEvidence(
     {
       ...base,
       skillBreakdown,
       targetedPractice,
+      strategyCandidates,
+      selectedStrategy,
       adaptationNote:
         cleanText(value?.adaptationNote) ||
         `MentorAI will keep tracking ${skillBreakdown[0]?.skill?.toLowerCase() || "this concept"} and use it to shape the next live check-in and practice set.`,
@@ -304,6 +333,7 @@ export default async function handler(req, res) {
     '  "observedOperations": ["only operations visibly shown, such as distribution, combining like terms, fractions"],',
     '  "missingOrIncorrectSteps": ["missing or wrong step tied to the live board"],',
     '  "result": "correct|incorrect|incomplete|unclear",',
+    '  "specificMishap": "the exact visible mishap or missing step MentorAI should address first",',
     '  "misconception": "short label for the main live issue, or say the solution path looks correct",',
     '  "confidence": 0.78,',
     '  "explanation": "one or two sentences explaining what you actually see on this board",',
@@ -313,6 +343,8 @@ export default async function handler(req, res) {
     '  "nextSteps": ["specific next tutoring move based on the current board"],',
     '  "skillBreakdown": [{"skill": "Distribution", "status": "needs-support", "evidence": "what on the live board supports this", "tutorMove": "what to do next"}],',
     '  "targetedPractice": [{"title": "Distribution check", "prompt": "one tailored follow-up task using the live topic", "reason": "why this helps right now"}],',
+    '  "strategyCandidates": [{"label": "error isolation", "rationale": "why this teaching move fits the visible mistake", "tutorMove": "what the tutor should do", "chatText": "a short tutor line to say next"}],',
+    '  "selectedStrategy": {"label": "error isolation", "rationale": "why this is the best next move now", "tutorMove": "exact tutoring move", "chatText": "short tutor line to say next"},',
     '  "adaptationNote": "how MentorAI should adjust the next question or practice based on this live checkpoint"',
     "}",
     "",
@@ -324,6 +356,9 @@ export default async function handler(req, res) {
     "- observedOperations must list only what is visibly present, not what the student should have done.",
     "- If a concept is missing, put that in missingOrIncorrectSteps and mark the relevant skill as needs-support.",
     "- skillBreakdown should identify the exact live step or concept the student is struggling with, not just the broad subject.",
+    "- specificMishap must name the exact wrong, missing, or unsupported step that should be addressed first.",
+    "- strategyCandidates and selectedStrategy should stay grounded, practical, and not overhyped. Use simple moves like error isolation, retrieval check, worked example, or transfer practice only when they fit what is visible.",
+    "- chatText should speak directly to the learner and mention the exact mishap when possible.",
   ].join("\n");
 
   try {
